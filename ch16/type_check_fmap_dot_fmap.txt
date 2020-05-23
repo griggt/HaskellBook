@@ -1,0 +1,83 @@
+type check exercise, bottom of pg 640  (type checking fmap . fmap)
+
+   (.)  :: (b -> c) -> (a -> b) -> a -> c
+   fmap :: Functor f => (m -> n) -> f m -> f n
+   fmap :: Functor g => (x -> y) -> g x -> g y
+
+   (fmap . fmap) :: (Functor f1, Functor f2) => (a -> b) -> f1 (f2 a) -> f1 (f2 b)
+
+   --
+
+   (a -> b) 
+     subtitute with
+     (m -> n) -> f m -> f n
+     so
+       a ~= (m -> n)
+       b ~= f m -> f n
+    
+   (b -> c)
+     substitute with
+     (x -> y) -> g x -> g y
+     so
+       b ~= (x -> y)
+       c ~= g x -> g y
+     and thus
+       x ~= f m
+       y ~= f n
+         because  b = (f m -> f n) == (x -> y)
+
+     Thus c is
+       c ~= g (f m) -> g (f n)
+
+     and a -> c is
+
+     (m -> n) -> g (f m) -> g (f n)
+
+     or equivalently
+
+     (a -> b) -> f1 (f2 a) -> f1 (f2 b)
+
+        where a ~= m
+              b ~= n
+              f1 ~= g  [Functor]
+              f2 ~= f  [Functor]
+
+------------------------------------------------------------------------------------
+
+Maybe try it out with map first, it may be easier? and has the same pattern.
+
+   (.) :: (b -> c) -> (a -> b) -> a -> c
+   map :: (m -> n) -> [m] -> [n]
+   map :: (x -> y) -> [x] -> [y]
+
+   (map . map) :: (a -> b) -> [[a]] -> [[b]]
+
+   ---
+   (a -> b)
+     substitute with
+     (m -> n) -> [m] -> [n]
+     so
+        a ~= (m -> n)
+        b ~= [m] -> [n]
+
+   (b -> c)
+     substitute with
+     (x -> y) -> [x] -> [y]
+     so
+       b ~= (x -> y)
+       c ~= [x] -> [y]
+     and thus
+       x ~= [m]
+       y ~= [n]
+         because  b = ([m] -> [n]) == (x -> y)
+
+    Thus c is
+       c ~= [[m]] -> [[n]]
+
+    and a -> c is
+
+    (m -> n) -> [[m]] -> [[n]]
+
+    or equivalently
+
+    (a -> b) -> [[a]] -> [[b]]
