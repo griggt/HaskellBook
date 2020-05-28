@@ -1,0 +1,21 @@
+---------------------------------------------------------------------
+Some of the text in the ZipList applicative exercise (Ch 17, p. 722)
+no longer makes much sense, as the exercise was converted to use []
+rather than the custom List.  (change from 1.0RC3 -> 1.0RC4)
+
+    Here, toMyList is whatever function you’ve written to convert from
+    the built-in list type to your handmade List type. 
+    ^^^^^^ This sentence is no longer applicable.
+
+    [ ... ]
+
+    Check Prelude for functions that can give you what you need. 
+    One starts with the letter z, the other with the letter r. 
+    You’re meant to search for these yourself. 
+    
+    You’re looking for inspiration from these functions, not to be
+    able to directly reuse them, as you’re using a custom List type,
+    not the provided Prelude list type.
+    ^^^^^^ This sentence is no longer applicable.
+
+---------------------------------------------------------------------
