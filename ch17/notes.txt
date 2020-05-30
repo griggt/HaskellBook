@@ -1,0 +1,4 @@
+p. 721
+
+Applicative, unlike Functor, is not guaranteed to have a unique
+implementation for a given datatype.
