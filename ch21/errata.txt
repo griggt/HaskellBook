@@ -1,0 +1,2 @@
+SkiFree exercise doesn't seem to need the
+{-# LANGUAGE FlexibleContexts #-} extension.
