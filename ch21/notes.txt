@@ -1,0 +1,21 @@
+The type of [1,2,3,4,5] and [1..5] are not the same!
+
+Prelude> :t [1,2,3,4,5]
+[1,2,3,4,5] :: Num a => [a]
+
+Prelude> :t [1..5]
+[1..5] :: (Num a, Enum a) => [a]
+
+Note the additional Enum constraint. This can sometimes cause an issue.
+For example:
+
+Prelude> [1,2,3,4,5] :: [Sum Int]
+[Sum {getSum = 1},Sum {getSum = 2},Sum {getSum = 3},Sum {getSum = 4},Sum {getSum = 5}]
+
+Prelude> [1..5] :: [Sum Int]
+
+<interactive>:67:1: error:
+    * No instance for (Enum (Sum Int))
+        arising from the arithmetic sequence `1 .. 5'
+    * In the expression: [1 .. 5] :: [Sum Int]
+      In an equation for `it': it = [1 .. 5] :: [Sum Int]
