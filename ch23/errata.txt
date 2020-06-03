@@ -1,0 +1,24 @@
+p. 892
+
+exercise #5
+
+using GHCi 8.8.3
+
+needs parentheses:
+
+  Prelude> runState f >> f 0
+
+Prelude Control.Monad.Trans.State> runState f >> f 0
+
+<interactive>:89:15: error:
+    * Couldn't match expected type `Integer -> s -> b'
+                  with actual type `StateT Integer m0 ()'
+    * The function `f' is applied to one argument,
+      but its type `StateT Integer m0 ()' has none
+      In the second argument of `(>>)', namely `f 0'
+      In the expression: runState f >> f 0
+    * Relevant bindings include
+        it :: s -> b (bound at <interactive>:89:1)
+
+Prelude Control.Monad.Trans.State> runState (f >> f) 0
+((),2)
