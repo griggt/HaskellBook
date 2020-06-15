@@ -25,6 +25,13 @@ data Block =
 --   It fails using ipv4TransitionalAddress (but works if I add a third colon)
 
 --------------------------------------------------------------
+-- exercise #9
+
+fromIPAddress :: IPAddress -> IPAddress6
+fromIPAddress (IPAddress w32) = IPAddress6 0 $ (fromIntegral w32) .|. transitionPrefix
+  where transitionPrefix = shiftL 0xffff 32
+
+--------------------------------------------------------------
 
 instance Arbitrary IPAddress6 where
   arbitrary = liftA2 IPAddress6 arbitrary arbitrary
