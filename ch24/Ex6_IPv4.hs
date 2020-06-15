@@ -12,6 +12,9 @@ import Text.Trifecta
 data IPAddress = IPAddress Word32
   deriving (Eq, Ord, Show)
 
+-----------------------------------------------------------------------------
+-- Parsing
+
 ipaddr :: Parser IPAddress
 ipaddr = IPAddress <$> combineOctets <$> sepByN 4 octet (char '.')
   where combineOctets [a, b, c, d] = shiftL (fromIntegral a) 24
@@ -33,3 +36,15 @@ octet = do
 -- modified version of sepBy1 from Text.Parser.Combinators
 sepByN :: Alternative m => Int -> m a -> m sep -> m [a]
 sepByN n p sep = (:) <$> p <*> count (n-1) (sep *> p)
+
+-----------------------------------------------------------------------------
+-- Showing
+
+showIPAddress :: IPAddress -> String
+showIPAddress (IPAddress addr) = intercalate "." . map show $ octetssOf addr
+
+octetssOf :: Word32 -> [Word8]
+octetssOf x = reverse $ unfoldr f (x, 4)
+  where
+    f (w, c) | c == 0    = Nothing
+             | otherwise = Just (fromIntegral w .&. 0xff, (shiftR w 8, c - 1))

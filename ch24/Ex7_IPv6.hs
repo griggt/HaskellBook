@@ -5,7 +5,7 @@ import Data.Bits ((.|.), (.&.), shiftL, shiftR, finiteBitSize, Bits, FiniteBits)
 import Data.Char (digitToInt, intToDigit)
 import Data.List (intercalate, unfoldr)
 import Data.Foldable (foldl')
-import Data.Word (Word16, Word32, Word64)
+import Data.Word (Word16, Word64)
 import Numeric (showHex)
 import Test.QuickCheck (quickCheck, withMaxSuccess, Arbitrary(..))
 import Text.Trifecta
@@ -23,6 +23,160 @@ data Block =
 
 -- TODO FIXME Is this a valid string to parse "fe80::192.0.2.128"  ??
 --   It fails using ipv4TransitionalAddress (but works if I add a third colon)
+
+--------------------------------------------------------------
+
+instance Arbitrary IPAddress6 where
+  arbitrary = liftA2 IPAddress6 arbitrary arbitrary
+
+testParse :: (IPAddress6 -> String) -> IPAddress6 -> Bool
+testParse stringify addr =
+  case parseString ipv6Address mempty (stringify addr) of
+    Failure _ -> False
+    Success a -> a == addr
+
+-- TODO write a test to compare against the results of Network.Socket.HostAddress6
+--   it should have the same byte-order ??
+
+do_quickcheck :: IO ()
+do_quickcheck = do
+  quickCheck (withMaxSuccess 1000 $ testParse canonical)
+  quickCheck (withMaxSuccess 1000 $ testParse abbreviated)
+
+--------------------------------------------------------------
+-- Formatting as string  (exercise #8)
+
+canonical :: IPAddress6 -> String
+canonical (IPAddress6 uw lw) = (hexword uw) ++ ":" ++ (hexword lw)
+  where
+    b = map (showHexP' 4)  -- TODO can I combine the map and intercalate into the foldl' ?
+    c xs = intercalate ":" $ foldr (:) [] xs
+    hexword w = c . b . hextetsOf' $ w
+
+-- TODO refactor out commonality with ipv4transitional
+abbreviated :: IPAddress6 -> String
+abbreviated (IPAddress6 uw lw) =
+  case findLongestZeroRun ws of
+    (rs, rl) | rl > 1    -> showBlocks . spliceDC (rs,rl) $ blocks
+             | otherwise -> showBlocks $ blocks
+  where
+    ws = (hextetsOf' $ uw) ++ (hextetsOf' $ lw)
+    blocks =  Hextet <$> ws
+    spliceDC run = cutAndSplice run [DoubleColon]
+
+ipv4transitional :: IPAddress6 -> String
+ipv4transitional (IPAddress6 uw lw) =
+  case findLongestZeroRun w6 of
+    (rs, rl) | rl > 1    -> showBlocks . spliceDC (rs,rl) $ blocks
+             | otherwise -> showBlocks $ blocks
+  where
+    w6 = take 6 $ (hextetsOf' $ uw) ++ (hextetsOf' $ lw)
+    i4 = IPAddress $ fromIntegral lw .&. 0xffffffff
+    blocks = (Hextet <$> w6) ++ [IP4Addr i4]
+    spliceDC run = cutAndSplice run [DoubleColon]
+
+-- TODO use ShowS rather than all the (++)
+-- TODO have `showHex` function be a param so I can choose padded or not
+-- Trick to get a String out of a [ShowS] z:  (foldr (.) id z) ""
+--  z' = map (\x -> showHex x . showString ":") z
+-- To keep transform [ShowS] -> [String]:     map ($ "") z'
+showBlocks :: [Block] -> String
+showBlocks = foldr f ""
+  where
+    f :: Block -> String -> String
+    f DoubleColon xs         = "::" ++ xs
+    f (Hextet h)  ""         = showHex h ""
+    f (Hextet h)  xs@(':':t) = showHex h ""  ++ xs
+    f (Hextet h)  xs         = showHex h ":" ++ xs
+    f (IP4Addr ip4) xs       = showIPAddress ip4 ++ xs
+
+-- Create four hextets out of a Word64
+hextetsOf :: Word64 -> [Word16]
+hextetsOf x = reverse $ unfoldr f (x, 4)
+  where
+    f (w, c) | c == 0    = Nothing
+             | otherwise = Just (fromIntegral w .&. 0xffff, (shiftR w 16, c - 1))
+
+-- Convert integer 'x' into a hexedecimal string zero-padded to width
+-- Note that if the number is to large to fit into 'width' digits, the most
+-- significant digits will not be displayed, as the output is always 'width'
+-- characters in length.
+showHexP :: (Integral a, Bits a) => Int -> a -> String
+showHexP width x = reverse $ unfoldr f (x, width)
+  where
+    f (x, c) | c == 0    = Nothing
+             | otherwise = Just (intToDigit . fromIntegral $ x .&. 0xf,
+                                 (shiftR x 4, c - 1))
+
+-- Note that hextetsOf and showHexP have the same pattern.
+--   Combine into an inner function...
+--   The differences are:
+--     - type signature (could use polymorphic)
+--     - bitmask applied to value (0xffff vs 0xf)
+--     - function applied to value (id vs intToDigit)
+--     - shiftR count
+unfoldIntegral :: (Integral a, Bits a) =>
+                  Int ->        -- # of output items
+                  Int ->        -- # of bits per output item
+                  (a -> b) ->   -- transformation
+                  a ->          -- input integral
+                  [b]
+unfoldIntegral n k g x = reverse $ unfoldr f (x, n)
+  where
+    mask = 2 ^ k - 1
+    f (x, c) | c == 0    = Nothing
+             | otherwise = Just (g $ x .&. mask, (shiftR x k, c - 1))
+
+-- TODO test these two with quickcheck and then replace the defn's above
+showHexP' :: (Integral a, Bits a) => Int -> a -> String
+showHexP' width = unfoldIntegral width 4 (intToDigit . fromIntegral)
+
+hextetsOf' :: Word64 -> [Word16]
+hextetsOf' = unfoldIntegral 4 16 fromIntegral
+
+-- TODO replace all hextetsOf* with this polymorphic version
+hextetsOf'' :: (FiniteBits a, Integral a) => a -> [Word16]
+hextetsOf'' x = unfoldIntegral (finiteBitSize x `div` 16) 16 fromIntegral x
+
+do_quickcheck_unfoldIntegral :: IO ()
+do_quickcheck_unfoldIntegral = do
+  quickCheck (withMaxSuccess 1000 $ (testShowHexP' :: Word16 -> Bool))
+  quickCheck (withMaxSuccess 1000 $ testHextetsOf')
+  where
+    testShowHexP' :: (Integral a, Bits a) => a -> Bool
+    testShowHexP' x = showHexP' 4 x == showHexP 4 x
+
+    testHextetsOf' :: Word64 -> Bool
+    testHextetsOf' x = hextetsOf' x == hextetsOf x
+
+-----------------------------------------------------------------------------
+--  to find longest run:
+--    type Run = (Int, Int)   -- start index, length
+--    run a foldl' with accumulator of the following structure
+--       (
+--         Run -- longest run
+--         Run -- current run
+--         Int -- current position counter
+--       )
+--  then use a cutAndSplice to replace the run with a double colon
+
+type Run = (Int, Int)
+
+-- arguments: Run, text to splice, existing text
+cutAndSplice :: Run -> [a] -> [a] -> [a]
+cutAndSplice (i, n) s xs = lhs ++ s ++ (drop n rhs)
+  where (lhs, rhs) = splitAt i xs
+
+findLongestZeroRun :: Integral a => [a] -> Run
+findLongestZeroRun = longest . foldl' f ((0,0), (0,0), 0)
+  where
+    longest (r, _, _) = r
+    maxRun (s,n) (s',n') = if (n' > n) then (s',n') else (s,n)
+
+    f :: Integral a => (Run, Run, Int) -> a -> (Run, Run, Int)
+    f (lng, (0,0), i) 0 = let c = (i,1)   in (maxRun lng c, c, i+1)
+    f (lng, (s,n), i) 0 = let c = (s,n+1) in (maxRun lng c, c, i+1)
+    f (lng, _,     i) _ = let c = (0,0)   in (lng,          c, i+1)
 
 -- TODO add error contexts, esp. when we call try; use <?>
 
@@ -237,13 +391,6 @@ doubleColon = DoubleColon <$ string "::"
 -- colon = char ':' <* notFollowedBy (char ':')
 
 -------------------------------------------------------------------------------------
--- Create two hextets out of a Word32
-hextetsOf :: Word32 -> [Word16]
-hextetsOf x = reverse $ unfoldr f (x, 2)
-  where
-    f (w, c) | c == 0    = Nothing
-             | otherwise = Just (fromIntegral w .&. 0xffff, (shiftR w 16, c - 1))
-
 -- Assumptions, to be enforced by the parser as preconditions:
 --    Input block list is one of:
 --      - exactly 8 elements and DOES NOT contain a DoubleColon
@@ -277,7 +424,7 @@ blocksToAddress = toAddress . combine . reduce
     f (IP4Addr a) (n, False, lhs, rhs) = (n+2, False, lhs, hi4 a ++ rhs)
     f (IP4Addr a) (n, True,  lhs, rhs) = (n+2, True,  hi4 a ++ lhs, rhs)
 
-    hi4 (IPAddress a) = hextetsOf a
+    hi4 (IPAddress a) = hextetsOf'' a
 
 -------------------------------------------------------------------------------------
 -- Combinators
