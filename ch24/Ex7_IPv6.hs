@@ -39,9 +39,6 @@ testParse stringify addr =
     Failure _ -> False
     Success a -> a == addr
 
--- TODO write a test to compare against the results of Network.Socket.HostAddress6
---   it should have the same byte-order ??
-
 do_quickcheck :: IO ()
 do_quickcheck = do
   quickCheck (withMaxSuccess 1000 $ testParse canonical)
@@ -54,30 +51,35 @@ do_quickcheck = do
 canonical :: IPAddress6 -> String
 canonical (IPAddress6 uw lw) = (hexword uw) ++ ":" ++ (hexword lw)
   where
-    b = map (showHexP 4)  -- TODO can I combine the map and intercalate into the fold ?
-    c xs = intercalate ":" $ foldr (:) [] xs
-    hexword w = c . b . hextetsOf $ w
+    hexword w = intercalate ":" . map (showHexP 4) . hextetsOf $ w
 
--- TODO refactor out commonality with ipv4transitional
+canonical' :: IPAddress6 -> String
+canonical' (IPAddress6 uw lw) = (hexword uw) ++ ":" ++ (hexword lw)
+  where    
+    hexword w = foldr f "" (hextetsOf w)
+    f w "" = sh w
+    f w s  = (sh w) ++ (':' : s)
+    sh = showHexP 4
+
 abbreviated :: IPAddress6 -> String
-abbreviated (IPAddress6 uw lw) =
-  case findLongestZeroRun ws of
-    (rs, rl) | rl > 1    -> showBlocks . spliceDC (rs,rl) $ blocks
-             | otherwise -> showBlocks $ blocks
+abbreviated (IPAddress6 uw lw) = abbreviate ws blocks
   where
     ws = (hextetsOf uw) ++ (hextetsOf lw)
-    blocks =  Hextet <$> ws
-    spliceDC run = cutAndSplice run [DoubleColon]
+    blocks = Hextet <$> ws
 
 ipv4transitional :: IPAddress6 -> String
-ipv4transitional (IPAddress6 uw lw) =
-  case findLongestZeroRun ws of
-    (rs, rl) | rl > 1    -> showBlocks . spliceDC (rs,rl) $ blocks
-             | otherwise -> showBlocks $ blocks
+ipv4transitional (IPAddress6 uw lw) = abbreviate ws blocks
   where
     ws = take 6 $ (hextetsOf uw) ++ (hextetsOf lw)
     i4 = IPAddress $ fromIntegral lw .&. 0xffffffff
     blocks = (Hextet <$> ws) ++ [IP4Addr i4]
+
+abbreviate :: [Word16] -> [Block] -> String
+abbreviate hextets blocks =
+  case findLongestZeroRun hextets of
+    (rs, rl) | rl > 1    -> showBlocks . spliceDC (rs,rl) $ blocks
+             | otherwise -> showBlocks $ blocks
+  where
     spliceDC run = cutAndSplice run [DoubleColon]
 
 -- TODO use ShowS rather than all the (++)
@@ -238,8 +240,6 @@ ipv4TransitionalAddress :: Parser IPAddress6
 ipv4TransitionalAddress = try canonicalIPv4Transitional <|> abbreviatedIPv4Transitional 
                             <?> "IPv4 transitional address"
 
--- TODO can I name these parsers that use do-notation?
-
 --   CANONICAL-IPV4-TRANSITIONAL-ADDRESS ::=
 --      <canonical-6-hextet> <ipv4-address>
 
@@ -247,7 +247,7 @@ canonicalIPv4Transitional :: Parser IPAddress6
 canonicalIPv4Transitional = do
   lhs <- canonical6Hextet
   rhs <- ipaddr'
-  return $ blocksToAddress $ (Hextet <$> lhs) ++ [IP4Addr rhs]
+  return (blocksToAddress $ (Hextet <$> lhs) ++ [IP4Addr rhs]) <?> "canonical IPv4 transitional address"
 
 --   ABBREVIATED-IPV4-TRANSITIONAL-ADDRESS ::=
 --      <abbreviated-6-hextet> <ipv4-address>
@@ -256,13 +256,13 @@ abbreviatedIPv4Transitional :: Parser IPAddress6
 abbreviatedIPv4Transitional = do
   lhs <- abbreviated6Hextet
   rhs <- ipaddr'
-  return $ blocksToAddress (lhs ++ [IP4Addr rhs])
+  return (blocksToAddress (lhs ++ [IP4Addr rhs])) <?> "abbreviated IPv4 transitional address"
 
 --   CANONICAL-6-HEXTET ::=
 --      <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':'
 
 canonical6Hextet :: Parser [Word16]
-canonical6Hextet = endByN 6 hextet colon -- <?> "canonical 6-hextet"
+canonical6Hextet = endByN 6 hextet colon <?> "canonical 6-hextet"
 
 --   ABBREVIATED-6-HEXTET ::=
 --      <up-to-four-hextets>   "::"
@@ -303,7 +303,7 @@ abbreviated6Hextet = choice (reverse abbrevs) <?> "abbreviated 6-hextet"  -- TOD
 --      (empty)
 
 upToNHextets :: Int -> Parser [Word16]
-upToNHextets n = sepByAtMost n hextet colon
+upToNHextets n = sepByAtMost n hextet colon -- <?> ("up to " ++ (show n) ++ " hextets")
 
 --   IPV4-ADDRESS ::=
 --      <octet> '.' <octet> '.' <octet> '.' <octet>
@@ -317,7 +317,7 @@ upToNHextets n = sepByAtMost n hextet colon
 --    | <hex>
 
 hextet :: Parser Word16
-hextet = fromIntegral <$> (integral 16 $ someAtMost 4 hexDigit)
+hextet = fromIntegral <$> (integral 16 $ someAtMost 4 hexDigit) <?> "hextet"
 
 --   OCTET ::=
 --      <decimal>       -- in range [0..255]
@@ -344,7 +344,6 @@ colon = char ':' -- <* notFollowedBy (char ':')
 blocksToAddress :: [Block] -> IPAddress6
 blocksToAddress = toAddress . combine . reduce
   where
-    -- TODO rename these subfunctions
     toAddress :: [Word16] -> IPAddress6
     toAddress ws = IPAddress6 (smush $ take 4 ws) (smush $ drop 4 ws)  -- TODO use splitAt?
       where smush = foldl' (\acc x -> (shiftL acc 16) .|. fromIntegral x) 0
