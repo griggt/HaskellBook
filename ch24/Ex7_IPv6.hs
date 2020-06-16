@@ -50,8 +50,7 @@ do_quickcheck = do
 
 canonical :: IPAddress6 -> String
 canonical (IPAddress6 uw lw) = (hexword uw) ++ ":" ++ (hexword lw)
-  where
-    hexword w = intercalate ":" . map (showHexP 4) . hextetsOf $ w
+  where hexword w = intercalate ":" . map (showHexP 4) . hextetsOf $ w
 
 canonical' :: IPAddress6 -> String
 canonical' (IPAddress6 uw lw) = (hexword uw) ++ ":" ++ (hexword lw)
@@ -79,8 +78,7 @@ abbreviate hextets blocks =
   case findLongestZeroRun hextets of
     (rs, rl) | rl > 1    -> showBlocks . spliceDC (rs,rl) $ blocks
              | otherwise -> showBlocks $ blocks
-  where
-    spliceDC run = cutAndSplice run [DoubleColon]
+  where spliceDC run = cutAndSplice run [DoubleColon]
 
 -- TODO use ShowS rather than all the (++)
 -- TODO have `showHex` function be a param so I can choose padded or not
@@ -97,29 +95,12 @@ showBlocks = foldr f ""
     f (Hextet h)  xs         = showHex h ":" ++ xs
     f (IP4Addr ip4) xs       = showIPAddress ip4 ++ xs
 
-
-unfoldIntegral :: (Integral a, Bits a) =>
-                  Int ->        -- # of output items
-                  Int ->        -- # of bits per output item
-                  (a -> b) ->   -- transformation
-                  a ->          -- input integral
-                  [b]
-unfoldIntegral n k g x = reverse $ unfoldr f (x, n)
-  where
-    mask = 2 ^ k - 1
-    f (x, c) | c == 0    = Nothing
-             | otherwise = Just (g $ x .&. mask, (shiftR x k, c - 1))
-
 -- Convert integer 'x' into a hexedecimal string zero-padded to width
 -- Note that if the number is to large to fit into 'width' digits, the most
 -- significant digits will not be displayed, as the output is always 'width'
 -- characters in length.
 showHexP :: (Integral a, Bits a) => Int -> a -> String
 showHexP width = unfoldIntegral width 4 (intToDigit . fromIntegral)
-
--- Create four hextets out of a Word64
-hextetsOf :: (FiniteBits a, Integral a) => a -> [Word16]
-hextetsOf x = unfoldIntegral (finiteBitSize x `div` 16) 16 fromIntegral x
 
 -----------------------------------------------------------------------------
 --  to find longest run:
@@ -369,6 +350,22 @@ blocksToAddress = toAddress . combine . reduce
     f (IP4Addr a) (n, True,  lhs, rhs) = (n+2, True,  hi4 a ++ lhs, rhs)
 
     hi4 (IPAddress a) = hextetsOf a
+
+-- Create four hextets out of a Word64
+hextetsOf :: (FiniteBits a, Integral a) => a -> [Word16]
+hextetsOf x = unfoldIntegral (finiteBitSize x `div` 16) 16 fromIntegral x
+
+unfoldIntegral :: (Integral a, Bits a) =>
+                  Int ->        -- # of output items
+                  Int ->        -- # of bits per output item
+                  (a -> b) ->   -- transformation
+                  a ->          -- input integral
+                  [b]
+unfoldIntegral n k g x = reverse $ unfoldr f (x, n)
+  where
+    mask = 2 ^ k - 1
+    f (x, c) | c == 0    = Nothing
+             | otherwise = Just (g $ x .&. mask, (shiftR x k, c - 1))
 
 -------------------------------------------------------------------------------------
 -- Combinators
