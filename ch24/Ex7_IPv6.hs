@@ -8,7 +8,7 @@ import Data.Foldable (foldl')
 import Data.Word (Word16, Word64)
 import Numeric (showHex)
 import Test.QuickCheck (quickCheck, withMaxSuccess, Arbitrary(..))
-import Text.Trifecta
+import Text.Trifecta hiding (colon)
 
 import Ex6_IPv4 (IPAddress(..), showIPAddress, ipaddr')
 
@@ -54,9 +54,9 @@ do_quickcheck = do
 canonical :: IPAddress6 -> String
 canonical (IPAddress6 uw lw) = (hexword uw) ++ ":" ++ (hexword lw)
   where
-    b = map (showHexP' 4)  -- TODO can I combine the map and intercalate into the foldl' ?
+    b = map (showHexP 4)  -- TODO can I combine the map and intercalate into the fold ?
     c xs = intercalate ":" $ foldr (:) [] xs
-    hexword w = c . b . hextetsOf' $ w
+    hexword w = c . b . hextetsOf $ w
 
 -- TODO refactor out commonality with ipv4transitional
 abbreviated :: IPAddress6 -> String
@@ -65,19 +65,19 @@ abbreviated (IPAddress6 uw lw) =
     (rs, rl) | rl > 1    -> showBlocks . spliceDC (rs,rl) $ blocks
              | otherwise -> showBlocks $ blocks
   where
-    ws = (hextetsOf' $ uw) ++ (hextetsOf' $ lw)
+    ws = (hextetsOf uw) ++ (hextetsOf lw)
     blocks =  Hextet <$> ws
     spliceDC run = cutAndSplice run [DoubleColon]
 
 ipv4transitional :: IPAddress6 -> String
 ipv4transitional (IPAddress6 uw lw) =
-  case findLongestZeroRun w6 of
+  case findLongestZeroRun ws of
     (rs, rl) | rl > 1    -> showBlocks . spliceDC (rs,rl) $ blocks
              | otherwise -> showBlocks $ blocks
   where
-    w6 = take 6 $ (hextetsOf' $ uw) ++ (hextetsOf' $ lw)
+    ws = take 6 $ (hextetsOf uw) ++ (hextetsOf lw)
     i4 = IPAddress $ fromIntegral lw .&. 0xffffffff
-    blocks = (Hextet <$> w6) ++ [IP4Addr i4]
+    blocks = (Hextet <$> ws) ++ [IP4Addr i4]
     spliceDC run = cutAndSplice run [DoubleColon]
 
 -- TODO use ShowS rather than all the (++)
@@ -95,31 +95,7 @@ showBlocks = foldr f ""
     f (Hextet h)  xs         = showHex h ":" ++ xs
     f (IP4Addr ip4) xs       = showIPAddress ip4 ++ xs
 
--- Create four hextets out of a Word64
-hextetsOf :: Word64 -> [Word16]
-hextetsOf x = reverse $ unfoldr f (x, 4)
-  where
-    f (w, c) | c == 0    = Nothing
-             | otherwise = Just (fromIntegral w .&. 0xffff, (shiftR w 16, c - 1))
 
--- Convert integer 'x' into a hexedecimal string zero-padded to width
--- Note that if the number is to large to fit into 'width' digits, the most
--- significant digits will not be displayed, as the output is always 'width'
--- characters in length.
-showHexP :: (Integral a, Bits a) => Int -> a -> String
-showHexP width x = reverse $ unfoldr f (x, width)
-  where
-    f (x, c) | c == 0    = Nothing
-             | otherwise = Just (intToDigit . fromIntegral $ x .&. 0xf,
-                                 (shiftR x 4, c - 1))
-
--- Note that hextetsOf and showHexP have the same pattern.
---   Combine into an inner function...
---   The differences are:
---     - type signature (could use polymorphic)
---     - bitmask applied to value (0xffff vs 0xf)
---     - function applied to value (id vs intToDigit)
---     - shiftR count
 unfoldIntegral :: (Integral a, Bits a) =>
                   Int ->        -- # of output items
                   Int ->        -- # of bits per output item
@@ -132,27 +108,16 @@ unfoldIntegral n k g x = reverse $ unfoldr f (x, n)
     f (x, c) | c == 0    = Nothing
              | otherwise = Just (g $ x .&. mask, (shiftR x k, c - 1))
 
--- TODO test these two with quickcheck and then replace the defn's above
-showHexP' :: (Integral a, Bits a) => Int -> a -> String
-showHexP' width = unfoldIntegral width 4 (intToDigit . fromIntegral)
+-- Convert integer 'x' into a hexedecimal string zero-padded to width
+-- Note that if the number is to large to fit into 'width' digits, the most
+-- significant digits will not be displayed, as the output is always 'width'
+-- characters in length.
+showHexP :: (Integral a, Bits a) => Int -> a -> String
+showHexP width = unfoldIntegral width 4 (intToDigit . fromIntegral)
 
-hextetsOf' :: Word64 -> [Word16]
-hextetsOf' = unfoldIntegral 4 16 fromIntegral
-
--- TODO replace all hextetsOf* with this polymorphic version
-hextetsOf'' :: (FiniteBits a, Integral a) => a -> [Word16]
-hextetsOf'' x = unfoldIntegral (finiteBitSize x `div` 16) 16 fromIntegral x
-
-do_quickcheck_unfoldIntegral :: IO ()
-do_quickcheck_unfoldIntegral = do
-  quickCheck (withMaxSuccess 1000 $ (testShowHexP' :: Word16 -> Bool))
-  quickCheck (withMaxSuccess 1000 $ testHextetsOf')
-  where
-    testShowHexP' :: (Integral a, Bits a) => a -> Bool
-    testShowHexP' x = showHexP' 4 x == showHexP 4 x
-
-    testHextetsOf' :: Word64 -> Bool
-    testHextetsOf' x = hextetsOf' x == hextetsOf x
+-- Create four hextets out of a Word64
+hextetsOf :: (FiniteBits a, Integral a) => a -> [Word16]
+hextetsOf x = unfoldIntegral (finiteBitSize x `div` 16) 16 fromIntegral x
 
 -----------------------------------------------------------------------------
 --  to find longest run:
@@ -167,11 +132,6 @@ do_quickcheck_unfoldIntegral = do
 
 type Run = (Int, Int)
 
--- arguments: Run, text to splice, existing text
-cutAndSplice :: Run -> [a] -> [a] -> [a]
-cutAndSplice (i, n) s xs = lhs ++ s ++ (drop n rhs)
-  where (lhs, rhs) = splitAt i xs
-
 findLongestZeroRun :: Integral a => [a] -> Run
 findLongestZeroRun = longest . foldl' f ((0,0), (0,0), 0)
   where
@@ -183,21 +143,14 @@ findLongestZeroRun = longest . foldl' f ((0,0), (0,0), 0)
     f (lng, (s,n), i) 0 = let c = (s,n+1) in (maxRun lng c, c, i+1)
     f (lng, _,     i) _ = let c = (0,0)   in (lng,          c, i+1)
 
+-- arguments: Run, text to splice, existing text
+cutAndSplice :: Run -> [a] -> [a] -> [a]
+cutAndSplice (i, n) s xs = lhs ++ s ++ (drop n rhs)
+  where (lhs, rhs) = splitAt i xs
+
 ---------------------------------------------------------------
--- A potential strategy, somewhat chaotic:
---   Read out a bunch of hexadecimal blocks separated by colons
---   Some ground rules:
---     - no more than four hex character per block
---     - no more than 8 blocks total (or 7 colon delimiters)
---     - no more than one instance of two adjacent delimiters (::)
---     - no whitespace
---     - handle IPv4 format last 32 bits as special case
---
-
 -- for notational convenience
-(<<*>>) = fmap . fmap
-
--- Maybe a better idea, write as a CFG in BNF:
+(<<$>>) = fmap . fmap
 
 ----------------------------------------------------------------
 --   ** BNF GRAMMAR **
@@ -209,25 +162,13 @@ findLongestZeroRun = longest . foldl' f ((0,0), (0,0), 0)
 --    | <ipv4-transitional-address>
 
 ipv6Address :: Parser IPAddress6
-ipv6Address = try (canonicalAddress <?> "canonical address")
-          <|> try (ipv4TransitionalAddress <?> "IPv4 transitional address")
-          <|> abbreviatedAddress
+ipv6Address = try canonicalAddress <|> try ipv4TransitionalAddress <|> abbreviatedAddress
 
 --   CANONICAL-ADDRESS ::=
 --      <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet>
 
 canonicalAddress :: Parser IPAddress6
-canonicalAddress = blocksToAddress <$> Hextet <<*>> sepByN 8 hextet (char ':')
-
--- canonicalAddress = do
---   half1 <- sepByN 4 hextet (char ':')
---   char ':'
---   half2 <- sepByN 4 hextet (char ':')
---   return $ IPAddress6 (combineHextets half1) (combineHextets half2)
---   where combineHextets [a, b, c, d] = shiftL (fromIntegral a) 48
---                                   .|. shiftL (fromIntegral b) 32
---                                   .|. shiftL (fromIntegral c) 16
---                                   .|.        (fromIntegral d)
+canonicalAddress = blocksToAddress <$> Hextet <<$>> sepByN 8 hextet colon <?> "canonical address"
 
 --   Allowed abbreviations:
 --      omit leading zeros in any hextet
@@ -267,46 +208,37 @@ canonicalAddress = blocksToAddress <$> Hextet <<*>> sepByN 8 hextet (char ':')
 --    | ::
 
 --   ABBREVIATED-ADDRESS ::=     // [concise encoding]
--- 7    <up-to-six-blocks>   "::"
--- 6  | <up-to-five-blocks>  "::" hextet
--- 5  | <up-to-four-blocks>  "::" hextet ':' hextet
--- 4  | <up-to-three-blocks> "::" hextet ':' hextet ':' hextet
--- 3  | <up-to-two-blocks>   "::" hextet ':' hextet ':' hextet ':' hextet
--- 2  | <up-to-one-block>    "::" hextet ':' hextet ':' hextet ':' hextet ':' hextet
--- 1  | <zero-blocks>        "::" hextet ':' hextet ':' hextet ':' hextet ':' hextet ':' hextet
+-- 7    <up-to-six-hextets>   "::"
+-- 6  | <up-to-five-hextets>  "::" hextet
+-- 5  | <up-to-four-hextets>  "::" hextet ':' hextet
+-- 4  | <up-to-three-hextets> "::" hextet ':' hextet ':' hextet
+-- 3  | <up-to-two-hextets>   "::" hextet ':' hextet ':' hextet ':' hextet
+-- 2  | <up-to-one-hextet>    "::" hextet ':' hextet ':' hextet ':' hextet ':' hextet
+-- 1  | <zero-hextets>        "::" hextet ':' hextet ':' hextet ':' hextet ':' hextet ':' hextet
 
 --    TODO can I perform less backtracking if I put the variable length
 --         block runs on the right hand side of the '::' ?
 
 abbreviatedAddress :: Parser IPAddress6
-abbreviatedAddress = choice (reverse abbrevs)   -- TODO ugggh, reverse
+abbreviatedAddress = blocksToAddress <$> choice (reverse abbrevs) <?> "abbreviated address"  -- TODO ugggh, reverse
   -- argument `n' is number of fixed blocks to right of double colon
-  where abbrevs = [try $ blocksToAddress <$> abbrevBlocks n | n <- [0..6]]
+  where abbrevs = [try $ abbrevBlocks n 6 False | n <- [0..6]]
 
--- TODO can I write this cleaner, maybe without do-notation?
-abbrevBlocks :: Int -> Parser [Block]
-abbrevBlocks n = do
-  lhs <- upToNBlocks $ 6 - n
-  dc <- doubleColon
-  rhs <- sepByN n hextet (char ':')
-  return $ (Hextet <$> lhs) ++ (dc : (Hextet <$> rhs))
-
--- TODO refactor DRY with abbrevBlocks; also reversed issue, naming?
--- NB only difference from `abbrevBlocks` is the use of `endByN` vs `sepByN` on rhs
-abbrevBlocks' :: Int -> Parser [Block]
-abbrevBlocks' n = do
-  lhs <- upToNBlocks $ 6 - n
-  dc <- doubleColon
-  rhs <- endByN n hextet (char ':')
-  return $ (Hextet <$> lhs) ++ (dc : (Hextet <$> rhs))
+abbrevBlocks :: Int -> Int -> Bool -> Parser [Block]
+abbrevBlocks n m fl = Hextet <<$>> upToNHextets (m - n)
+                   <> (pure   <$>  doubleColon)
+                   <> Hextet <<$>> sepByC n hextet colon
+  where sepByC = if fl then endByN else sepByN
 
 --   IPV4-TRANSITIONAL-ADDRESS ::=
 --      <canonical-ipv4-transitional-address>
 --    | <abbreviated-ipv4-transitional-address>
 
 ipv4TransitionalAddress :: Parser IPAddress6
-ipv4TransitionalAddress = try (canonicalIPv4Transitional <?> "canonical IPv4 transitional")
-                      <|> abbreviatedIPv4Transitional
+ipv4TransitionalAddress = try canonicalIPv4Transitional <|> abbreviatedIPv4Transitional 
+                            <?> "IPv4 transitional address"
+
+-- TODO can I name these parsers that use do-notation?
 
 --   CANONICAL-IPV4-TRANSITIONAL-ADDRESS ::=
 --      <canonical-6-hextet> <ipv4-address>
@@ -330,48 +262,48 @@ abbreviatedIPv4Transitional = do
 --      <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':'
 
 canonical6Hextet :: Parser [Word16]
-canonical6Hextet = endByN 6 hextet (char ':')
+canonical6Hextet = endByN 6 hextet colon -- <?> "canonical 6-hextet"
 
 --   ABBREVIATED-6-HEXTET ::=
---      <up-to-four-blocks>   "::"
---    | <up-to-three-blocks>  "::" hextet ':'
---    | <up-to-two-blocks>    "::" hextet ':' hextet ':'
---    | <up-to-one-block>     "::" hextet ':' hextet ':' hextet ':'
---    | <zero-blocks>         "::" hextet ':' hextet ':' hextet ':' hextet ':'
+--      <up-to-four-hextets>   "::"
+--    | <up-to-three-hextets>  "::" hextet ':'
+--    | <up-to-two-hextets>    "::" hextet ':' hextet ':'
+--    | <up-to-one-hextet>     "::" hextet ':' hextet ':' hextet ':'
+--    | <zero-hextets>         "::" hextet ':' hextet ':' hextet ':' hextet ':'
 
 abbreviated6Hextet :: Parser [Block]
-abbreviated6Hextet = choice (reverse abbrevs)   -- TODO ugggh, reverse
-  where abbrevs = [try (abbrevBlocks' n <?> "abbreviated 6 hextets") | n <- [0..4]]
+abbreviated6Hextet = choice (reverse abbrevs) <?> "abbreviated 6-hextet"  -- TODO ugggh, reverse
+  where abbrevs = [try $ abbrevBlocks n 4 True | n <- [0..4]]
 
---   UP-TO-SIX-BLOCKS ::=
---      <hextet> ':' <up-to-five-blocks>
---    | <up-to-five-blocks>
+--   UP-TO-SIX-HEXTETS ::=
+--      <hextet> ':' <up-to-five-hextets>
+--    | <up-to-five-hextets>
 
---   UP-TO-FIVE-BLOCKS ::=
---      <hextet> ':' <up-to-four-blocks>
---    | <up-to-four-blocks>
+--   UP-TO-FIVE-HEXTETS ::=
+--      <hextet> ':' <up-to-four-hextets>
+--    | <up-to-four-hextets>
 
---   UP-TO-FOUR-BLOCKS ::=
---      <hextet> ':' <up-to-three-blocks>
---    | <up-to-three-blocks>
+--   UP-TO-FOUR-HEXTETS ::=
+--      <hextet> ':' <up-to-three-hextets>
+--    | <up-to-three-hextets>
 
---   UP-TO-THREE-BLOCKS ::=
---      <hextet> ':' <up-to-two-blocks>
---    | <up-to-two-blocks"
+--   UP-TO-THREE-HEXTETS ::=
+--      <hextet> ':' <up-to-two-hextets>
+--    | <up-to-two-hextets>
 
---   UP-TO-TWO-BLOCK ::=
---      <hextet> ':' <up-to-one-block>
---    | <up-to-one-block>
+--   UP-TO-TWO-HEXTETS ::=
+--      <hextet> ':' <up-to-one-hextet>
+--    | <up-to-one-hextet>
 
---   UP-TO-ONE-BLOCK ::=
+--   UP-TO-ONE-HEXTETS ::=
 --      <hextet>
---    | <zero-blocks>
+--    | <zero-hextets>
 
---   ZERO-BLOCKS ::=
+--   ZERO-HEXTETS ::=
 --      (empty)
 
-upToNBlocks :: Int -> Parser [Word16]
-upToNBlocks n = sepByAtMost n hextet (char ':')
+upToNHextets :: Int -> Parser [Word16]
+upToNHextets n = sepByAtMost n hextet colon
 
 --   IPV4-ADDRESS ::=
 --      <octet> '.' <octet> '.' <octet> '.' <octet>
@@ -401,8 +333,8 @@ hextet = fromIntegral <$> (integral 16 $ someAtMost 4 hexDigit)
 doubleColon :: Parser Block
 doubleColon = DoubleColon <$ string "::"
 
--- colon :: Parser Char
--- colon = char ':' <* notFollowedBy (char ':')
+colon :: Parser Char
+colon = char ':' -- <* notFollowedBy (char ':')
 
 -------------------------------------------------------------------------------------
 -- Assumptions, to be enforced by the parser as preconditions:
@@ -437,7 +369,7 @@ blocksToAddress = toAddress . combine . reduce
     f (IP4Addr a) (n, False, lhs, rhs) = (n+2, False, lhs, hi4 a ++ rhs)
     f (IP4Addr a) (n, True,  lhs, rhs) = (n+2, True,  hi4 a ++ lhs, rhs)
 
-    hi4 (IPAddress a) = hextetsOf'' a
+    hi4 (IPAddress a) = hextetsOf a
 
 -------------------------------------------------------------------------------------
 -- Combinators
@@ -460,11 +392,11 @@ integral base digits = foldl' (\x d -> base * x + digitToInt d) 0 <$> digits
 someAtMost :: Parsing m => Int -> m a -> m [a]
 someAtMost 0 _ = pure []
 someAtMost 1 p = liftA2 (:) p (pure [])
-someAtMost n p = try ((count n p) <?> "someAtMost") <|> (someAtMost (n-1) p)
+someAtMost n p = try (count n p) <|> (someAtMost (n-1) p)
 
 sepByAtMost :: Parsing m => Int -> m a -> m sep -> m [a]
 sepByAtMost 0 _ _   = pure []
-sepByAtMost n p sep = try ((sepByN n p sep) <?> "sepByAtMost")<|> (sepByAtMost (n-1) p sep)
+sepByAtMost n p sep = try (sepByN n p sep)<|> (sepByAtMost (n-1) p sep)
 
 -- modified version of sepBy1 from Text.Parser.Combinators
 sepByN :: Alternative m => Int -> m a -> m sep -> m [a]
@@ -481,12 +413,3 @@ endBy1 p sep = some (p <* sep)
 -- discard the results of a succesful parse
 -- discard :: Functor f => f a -> f ()
 -- discard p = () <$ p
-
------------
--- used in early iterations
-
--- strictHextet :: Parser Word16
--- strictHextet = fromIntegral <$> hexNumN 4
-
--- hexNumN :: Int -> Parser Int
--- hexNumN n = foldl' (\x d -> 16 * x + digitToInt d) 0 <$> (count n hexDigit)
