@@ -21,9 +21,6 @@ data Block =
   | IP4Addr IPAddress
   deriving (Eq, Show)
 
--- TODO FIXME Is this a valid string to parse "fe80::192.0.2.128"  ??
---   It fails using ipv4TransitionalAddress (but works if I add a third colon)
-
 --------------------------------------------------------------
 -- exercise #9
 
@@ -49,6 +46,7 @@ do_quickcheck :: IO ()
 do_quickcheck = do
   quickCheck (withMaxSuccess 1000 $ testParse canonical)
   quickCheck (withMaxSuccess 1000 $ testParse abbreviated)
+  quickCheck (withMaxSuccess 1000 $ testParse ipv4transitional)
 
 --------------------------------------------------------------
 -- Formatting as string  (exercise #8)
@@ -185,8 +183,6 @@ findLongestZeroRun = longest . foldl' f ((0,0), (0,0), 0)
     f (lng, (s,n), i) 0 = let c = (s,n+1) in (maxRun lng c, c, i+1)
     f (lng, _,     i) _ = let c = (0,0)   in (lng,          c, i+1)
 
--- TODO add error contexts, esp. when we call try; use <?>
-
 ---------------------------------------------------------------
 -- A potential strategy, somewhat chaotic:
 --   Read out a bunch of hexadecimal blocks separated by colons
@@ -197,6 +193,10 @@ findLongestZeroRun = longest . foldl' f ((0,0), (0,0), 0)
 --     - no whitespace
 --     - handle IPv4 format last 32 bits as special case
 --
+
+-- for notational convenience
+(<<*>>) = fmap . fmap
+
 -- Maybe a better idea, write as a CFG in BNF:
 
 ----------------------------------------------------------------
@@ -208,66 +208,13 @@ findLongestZeroRun = longest . foldl' f ((0,0), (0,0), 0)
 --    | <abbreviated-address>
 --    | <ipv4-transitional-address>
 
--- TODO move this IP4 transitional stuff to the bottom of the top-level parsers section
-
---   IPV4-TRANSITIONAL-ADDRESS ::=
---      <canonical-ipv4-transitional-address>
---    | <abbreviated-ipv4-transitional-address>
-
-ipv4TransitionalAddress :: Parser IPAddress6
-ipv4TransitionalAddress = try canonicalIPv4Transitional <|> abbreviatedIPv4Transitional
-
---   CANONICAL-IPV4-TRANSITIONAL-ADDRESS ::=
---      <canonical-6-hextet> <ipv4-address>
-
-canonicalIPv4Transitional :: Parser IPAddress6
-canonicalIPv4Transitional = do
-  lhs <- canonical6Hextet
-  rhs <- ipaddr'
-  return $ blocksToAddress $ (Hextet <$> lhs) ++ [IP4Addr rhs]
-
---   ABBREVIATED-IPV4-TRANSITIONAL-ADDRESS ::=
---      <abbreviated-6-hextet> <ipv4-address>
-
-abbreviatedIPv4Transitional :: Parser IPAddress6
-abbreviatedIPv4Transitional = do
-  lhs <- abbreviated6Hextet
-  rhs <- ipaddr'
-  return $ blocksToAddress (lhs ++ [IP4Addr rhs])
-
---   CANONICAL-6-HEXTET ::=
---      <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':'
-
-canonical6Hextet :: Parser [Word16]
-canonical6Hextet = sepByN 6 hextet (char ':') <* (char ':')  -- TODO create an endByN also?
-
---   ABBREVIATED-6-HEXTET ::=
---      <up-to-four-blocks>   "::"
---    | <up-to-three-blocks>  "::" hextet ':'
---    | <up-to-two-blocks>    "::" hextet ':' hextet ':'
---    | <up-to-one-block>     "::" hextet ':' hextet ':' hextet ':'
---    | <zero-blocks>         "::" hextet ':' hextet ':' hextet ':' hextet ':'
-
-abbreviated6Hextet :: Parser [Block]
-abbreviated6Hextet = choice (reverse abbrevs)   -- TODO ugggh, reverse
-  where abbrevs = [try $ abbrevBlocks n <* (char ':') | n <- [0..4]]
-
---   IPV4-ADDRESS ::=
---      <octet> '.' <octet> '.' <octet> '.' <octet>
-
---   OCTET ::=
---      <decimal>       -- in range [0..255]
-
---   NB For parsing the IPv4 address portion we use `ipaddr'` imported from Ex6_IPv4
-
 ipv6Address :: Parser IPAddress6
-ipv6Address = try canonicalAddress <|> abbreviatedAddress   -- TODO IPv4 compatibility address
+ipv6Address = try (canonicalAddress <?> "canonical address")
+          <|> try (ipv4TransitionalAddress <?> "IPv4 transitional address")
+          <|> abbreviatedAddress
 
 --   CANONICAL-ADDRESS ::=
 --      <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet>
-
--- for notational convenience
-(<<*>>) = fmap . fmap
 
 canonicalAddress :: Parser IPAddress6
 canonicalAddress = blocksToAddress <$> Hextet <<*>> sepByN 8 hextet (char ':')
@@ -344,6 +291,58 @@ abbrevBlocks n = do
   rhs <- sepByN n hextet (char ':')
   return $ (Hextet <$> lhs) ++ (dc : (Hextet <$> rhs))
 
+-- TODO refactor DRY with abbrevBlocks; also reversed issue, naming?
+-- NB only difference from `abbrevBlocks` is the use of `endByN` vs `sepByN` on rhs
+abbrevBlocks' :: Int -> Parser [Block]
+abbrevBlocks' n = do
+  lhs <- upToNBlocks $ 6 - n
+  dc <- doubleColon
+  rhs <- endByN n hextet (char ':')
+  return $ (Hextet <$> lhs) ++ (dc : (Hextet <$> rhs))
+
+--   IPV4-TRANSITIONAL-ADDRESS ::=
+--      <canonical-ipv4-transitional-address>
+--    | <abbreviated-ipv4-transitional-address>
+
+ipv4TransitionalAddress :: Parser IPAddress6
+ipv4TransitionalAddress = try (canonicalIPv4Transitional <?> "canonical IPv4 transitional")
+                      <|> abbreviatedIPv4Transitional
+
+--   CANONICAL-IPV4-TRANSITIONAL-ADDRESS ::=
+--      <canonical-6-hextet> <ipv4-address>
+
+canonicalIPv4Transitional :: Parser IPAddress6
+canonicalIPv4Transitional = do
+  lhs <- canonical6Hextet
+  rhs <- ipaddr'
+  return $ blocksToAddress $ (Hextet <$> lhs) ++ [IP4Addr rhs]
+
+--   ABBREVIATED-IPV4-TRANSITIONAL-ADDRESS ::=
+--      <abbreviated-6-hextet> <ipv4-address>
+
+abbreviatedIPv4Transitional :: Parser IPAddress6
+abbreviatedIPv4Transitional = do
+  lhs <- abbreviated6Hextet
+  rhs <- ipaddr'
+  return $ blocksToAddress (lhs ++ [IP4Addr rhs])
+
+--   CANONICAL-6-HEXTET ::=
+--      <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':' <hextet> ':'
+
+canonical6Hextet :: Parser [Word16]
+canonical6Hextet = endByN 6 hextet (char ':')
+
+--   ABBREVIATED-6-HEXTET ::=
+--      <up-to-four-blocks>   "::"
+--    | <up-to-three-blocks>  "::" hextet ':'
+--    | <up-to-two-blocks>    "::" hextet ':' hextet ':'
+--    | <up-to-one-block>     "::" hextet ':' hextet ':' hextet ':'
+--    | <zero-blocks>         "::" hextet ':' hextet ':' hextet ':' hextet ':'
+
+abbreviated6Hextet :: Parser [Block]
+abbreviated6Hextet = choice (reverse abbrevs)   -- TODO ugggh, reverse
+  where abbrevs = [try (abbrevBlocks' n <?> "abbreviated 6 hextets") | n <- [0..4]]
+
 --   UP-TO-SIX-BLOCKS ::=
 --      <hextet> ':' <up-to-five-blocks>
 --    | <up-to-five-blocks>
@@ -374,6 +373,11 @@ abbrevBlocks n = do
 upToNBlocks :: Int -> Parser [Word16]
 upToNBlocks n = sepByAtMost n hextet (char ':')
 
+--   IPV4-ADDRESS ::=
+--      <octet> '.' <octet> '.' <octet> '.' <octet>
+
+--   NB For parsing the IPv4 address portion we use `ipaddr'` imported from Ex6_IPv4
+
 --   HEXTET ::=
 --      <hex> <hex> <hex> <hex>
 --    | <hex> <hex> <hex>
@@ -382,6 +386,9 @@ upToNBlocks n = sepByAtMost n hextet (char ':')
 
 hextet :: Parser Word16
 hextet = fromIntegral <$> (integral 16 $ someAtMost 4 hexDigit)
+
+--   OCTET ::=
+--      <decimal>       -- in range [0..255]
 
 --   HEX ::=
 --      0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | a | b | c | d | e | f
@@ -402,7 +409,6 @@ doubleColon = DoubleColon <$ string "::"
 --    Input block list is one of:
 --      - exactly 8 elements and DOES NOT contain a DoubleColon
 --      - fewer than 8 elements and contains a SINGLE DoubleColon
-
 blocksToAddress :: [Block] -> IPAddress6
 blocksToAddress = toAddress . combine . reduce
   where
@@ -454,16 +460,23 @@ integral base digits = foldl' (\x d -> base * x + digitToInt d) 0 <$> digits
 someAtMost :: Parsing m => Int -> m a -> m [a]
 someAtMost 0 _ = pure []
 someAtMost 1 p = liftA2 (:) p (pure [])
-someAtMost n p = try (count n p) <|> (someAtMost (n-1) p)
+someAtMost n p = try ((count n p) <?> "someAtMost") <|> (someAtMost (n-1) p)
 
 sepByAtMost :: Parsing m => Int -> m a -> m sep -> m [a]
 sepByAtMost 0 _ _   = pure []
-sepByAtMost n p sep = try (sepByN n p sep) <|> (sepByAtMost (n-1) p sep)
+sepByAtMost n p sep = try ((sepByN n p sep) <?> "sepByAtMost")<|> (sepByAtMost (n-1) p sep)
 
 -- modified version of sepBy1 from Text.Parser.Combinators
 sepByN :: Alternative m => Int -> m a -> m sep -> m [a]
 sepByN 0 _ _   = pure []
 sepByN n p sep = (:) <$> p <*> count (n-1) (sep *> p)
+
+-- variant of endBy1 with a specified count; for symmetry with sepByN
+endByN :: Alternative m => Int -> m a -> m sep -> m [a]
+endByN n p sep = count n (p <* sep)
+
+sepBy1 p sep = (:) <$> p <*> many (sep *> p)
+endBy1 p sep = some (p <* sep)
 
 -- discard the results of a succesful parse
 -- discard :: Functor f => f a -> f ()
