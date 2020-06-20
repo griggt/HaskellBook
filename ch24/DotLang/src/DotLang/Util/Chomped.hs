@@ -10,7 +10,7 @@ import Control.Applicative ((<|>), some, Alternative)
 import Data.Bifunctor (Bifunctor)
 import Data.Char (isSpace)
 import Data.Semigroup.Reducer (Reducer(..))
-import Text.Parser.Char (satisfy, string, CharParsing)
+import Text.Parser.Char (satisfy, space, string, CharParsing)
 import Text.Trifecta.Parser (Parser)
 
 -- TODO how useful are Semigroup/Monoid? They concatenate tokens without
@@ -37,7 +37,31 @@ class CharParsing m => ChompedParsing m where
     return $ Chomped (s, x)
 
   chompableSpace :: m [Char]
-  chompableSpace = some (satisfy isSpace)  -- TODO exclude end-of-line?!?
+  chompableSpace = some hspace
+
+hspace :: CharParsing m => m Char
+hspace = satisfy isHspace
+
+isHspace :: Char -> Bool
+isHspace c = (c == ' ') || (c == '\t')
+
+-- TODO refactor out the pattern commmon to all chomp**Space functions
+--       (and chomp function itself)
+
+chompSpace :: ChompedParsing m => m (Chomp String)
+chompSpace = do
+  s <- chompableSpace <|> pure ""
+  return $ Chomped (s, "")
+
+chompSomeSpace :: ChompedParsing m => m (Chomp String)
+chompSomeSpace = do
+  s <- some space
+  return $ Chomped (s, "")
+
+chompAllSpace :: ChompedParsing m => m (Chomp String)
+chompAllSpace = do
+  s <- (some space) <|> pure ""
+  return $ Chomped (s, "")
 
 chompSymbol :: ChompedParsing m => String -> m (Chomp String)
 chompSymbol x = chomp (string x)

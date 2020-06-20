@@ -21,12 +21,14 @@ module DotLang.Parser
   -- , CompassPt(..)
   -- , EdgeOp(..)
   -- , Identifier(..)
+  -- , parseGraphFile
+  -- , parseGraphString
   -- )
   where
 
-import Control.Applicative ((<|>), Alternative, liftA2)
+import Control.Applicative ((<|>), liftA2)
 import Control.Monad.IO.Class (MonadIO)
-import Data.Char (toLower, toUpper, isDigit, isLetter)
+import Data.Char (isDigit, isLetter)
 import Data.Semigroup.Reducer (Reducer(..))
 import Data.String (IsString, fromString)
 import Data.Text (Text)
@@ -39,7 +41,9 @@ import Text.Parser.Token.Highlight
 import Text.Trifecta (parseFromFileEx, parseString)
 import Text.Trifecta.Result (Result(..))
 
+import DotLang.Util.Char
 import DotLang.Util.Chomped
+import DotLang.Util.Combinators
 
 (<<$>>) :: (Functor f1, Functor f2) => (a -> b) -> f1 (f2 a) -> f1 (f2 b)
 (<<$>>) = fmap . fmap
@@ -49,6 +53,9 @@ import DotLang.Util.Chomped
 
 ------------------------------------------------------------------------------------------------
 -- Entry points
+
+-- TODO WONTFIX parseFromFile uses parseFromFileEx which assumes UTF-8 encoding
+--              Other parts of Trifecta have baked-in reliance on UTF-8 as well.
 
 -- TODO replace preprocessLineComments with our fully-fledged first pass
 parseGraphFile :: (MonadIO m) => FilePath -> m (Result Graph)
@@ -75,8 +82,10 @@ parseGraphString s = parse graph =<< parse preprocessLineComments s
 
 -- TODO need to add in quoted string as a token type, it is processed as a unit
 data DotToken =
-    TokKeyword String
+    TokEmpty
+  | TokKeyword String
   | TokIdentifier String
+  | TokQuoted String
   | TokOperator String
   | TokGrouping Char
   | TokPunctuation Char
@@ -84,22 +93,28 @@ data DotToken =
   deriving (Eq, Show)
 
 dtString :: DotToken -> String
+dtString (TokEmpty) = ""
 dtString (TokKeyword x) = x
 dtString (TokIdentifier x) = x
+dtString (TokQuoted x) = '"' : x ++ ['"']
 dtString (TokOperator x) = x
-dtString (TokComment x) = ' ' <$ x
+dtString (TokComment x) = ' ' <$ x     -- replace comment text with whitespace
 dtString (TokGrouping x) = pure x
 dtString (TokPunctuation x) = pure x
 
 instance Reducer DotToken String where
   unit = dtString
 
--- TODO FIXME, this will go right past a newline while chomping
--- TODO FIXME need to gobble up any whitespace at start of line
 dotLine :: ChompedParsing m => m [Chomp DotToken]
-dotLine = (<>) <$> many (dotToken <|> (TokComment <<$>> spanComment))
-               <*> (maybe [] pure <$> (optional (TokComment <<$>> trailingComment)))
+dotLine = (\a b c -> a <> b <> c)
+  -- TODO optional, don't always generate leading comment token
+            -- <$> (pure <$> (TokComment <<$>> (chompSpace)))
+            <$> (maybe [] pure <$> (optional (const TokEmpty <<$>> chompSomeSpace)))
+            <*> many (dotToken <|> (TokComment <<$>> spanComment))
+            <*> (maybe [] pure <$> (optional (TokComment <<$>> trailingComment)))
+            -- TODO need to match any trailing space, EOL
 
+-- TODO handle quoted id
 -- TODO order the alternatives appropriately
 dotToken :: ChompedParsing m => m (Chomp DotToken)
 dotToken = try (TokKeyword    <<$>> dotKeyword)
@@ -154,23 +169,6 @@ spanComment = comment (string "/*") (string "*/")
 chompKeyword :: ChompedParsing m => String -> m (Chomp String)
 chompKeyword x = chomp (ignoreCase x <* notFollowedBy alphaNumericChar)
 
--- my variant of an existing combinator
-manyTillSub :: Alternative m => m a -> m end -> [a] -> m [a]
-manyTillSub p end sub = go where go = (sub <$ end) <|> ((:) <$> p <*> go)
-
--- my variant of an existing combinator
-manyThru:: Alternative m => m a -> m end -> (end -> [a]) -> m [a]
-manyThru p end f = go where go = (f <$> end) <|> ((:) <$> p <*> go)
-
-endOfLine :: CharParsing m => m [Char]
-endOfLine = string "\r\n" <|> (pure <$> char '\n')  -- TODO or EOF?
-
--- isHspace :: Char -> Bool
--- isHspace c = c == ' ' || c == '\t'
-
--- skipHspaces :: CharParsing m => m ()
--- skipSome (satisfy isHspace)
-
 ------------------------------------------------------------------------------------------------
 -- This will eliminate lines beginning with '#' from the input
 -- It also swallows all newlines, do we want that?
@@ -183,14 +181,22 @@ normalLine :: CharParsing m => m String
 normalLine = manyThru anyChar endOfLine id
 ------------------------------------------------------------------------------------------------
 
--- TODO preprocessor should preserve whitspace layout so error messages from next
---      pass will have appropriate line/column indications!
--- TODO handle C++ style comments
--- TODO handle preprocessor lines (beginning w/#)
--- TODO FIXME parseFromFile uses parseFromFileEx which assumes UTF-8 encoding
--- TODO handle line continuation for "" strings (backslash)  [incorporate into string literal parser?]
--- TODO handle quoted string concatenation (+) [add a production rule around string literals?]
----      (do this in first pass?)
+{-  TODO Pass 1
+        * preserve whitspace layout so error messages from next
+          pass will have appropriate line/column indications!
+
+        * handle C++ style comments
+
+        * handle preprocessor lines (beginning w/#)
+
+        * handle line continuation for "" strings (backslash)
+          [incorporate into string literal parser?]
+
+        * handle quoted string concatenation (+)
+          [add a production rule around string literals?]
+ -}
+-- TODO Pass 2
+
 
 -----------------------------------------------------------------------------------------------
 -- DOT grammar
@@ -502,7 +508,7 @@ alphaNumericChar = nondigit <|> digit
 --    one from character set [_a-zA-Z\200-\377]
 
 nondigit :: CharParsing m => m Char
-nondigit = letter <|> (char '_') <|> oneOf ['\128'..'\255']
+nondigit = letter <|> (char '_') -- <|> oneOf ['\128'..'\255']
 
 -- DIGIT:
 --    one from character set [0-9]
@@ -516,26 +522,7 @@ keyword name = token (highlight ReservedIdentifier
                         (ignoreCase name <* notFollowedBy alphaNumericChar))
                       <?> (show name)
 
-ignoreCase :: CharParsing m => String -> m String
-ignoreCase s = sequenceA $ zipWith (<|>) (char . toUpper <$> s) (char . toLower <$> s)
-
 -------------------------------------------------------------------------------------------------
--- modified combinators from Text.Parser.Combinators
-
--- these are like the stock sepEndBy1 and sepEndBy, with the difference being
--- that the separator optionally occurs between instances of `p`
-
-optSepEndBy1 :: Alternative m => m a -> m sep -> m [a]
-optSepEndBy1 p sep =
-  flip id <$> p
-          <*> ((flip (:) <$> ((skipOptional sep) *> optSepEndBy p sep)) <|> pure pure)
-
-optSepEndBy :: Alternative m => m a -> m sep -> m [a]
-optSepEndBy p sep = optSepEndBy1 p sep <|> pure []
-
--------------------------------------------------------------------------------------------------
-
----------------------------------------------
 -- NOTES:
 --   keywords { node, edge, graph, digraph, subgraph, strict} are case-insensitive
 --   compass point values are NOT keywords, may be used as identifiers

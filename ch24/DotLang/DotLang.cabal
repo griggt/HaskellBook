@@ -24,7 +24,9 @@ library
 
   exposed-modules:
       DotLang.Parser
+      DotLang.Util.Char
       DotLang.Util.Chomped
+      DotLang.Util.Combinators
 
 source-repository head
   type:     git
