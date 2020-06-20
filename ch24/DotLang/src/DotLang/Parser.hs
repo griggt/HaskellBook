@@ -35,7 +35,8 @@ import Data.Text (Text)
 
 import Text.Parser.Char
 import Text.Parser.Combinators
-import Text.Parser.Token
+import Text.Parser.LookAhead
+import Text.Parser.Token hiding (stringLiteral)
 import Text.Parser.Token.Highlight
 
 import Text.Trifecta (parseFromFileEx, parseString)
@@ -80,7 +81,6 @@ parseGraphString s = parse graph =<< parse preprocessLineComments s
 --    way to reduce the token stream to a Rope (parser input), or build a rope
 --    out of a token stream.  The predefined Reducer instances are in the Rope.hs file.
 
--- TODO need to add in quoted string as a token type, it is processed as a unit
 data DotToken =
     TokEmpty
   | TokKeyword String
@@ -105,27 +105,45 @@ dtString (TokPunctuation x) = pure x
 instance Reducer DotToken String where
   unit = dtString
 
-dotLine :: ChompedParsing m => m [Chomp DotToken]
-dotLine = (\a b c -> a <> b <> c)
-  -- TODO optional, don't always generate leading comment token
-            -- <$> (pure <$> (TokComment <<$>> (chompSpace)))
-            <$> (maybe [] pure <$> (optional (const TokEmpty <<$>> chompSomeSpace)))
-            <*> many (dotToken <|> (TokComment <<$>> spanComment))
-            <*> (maybe [] pure <$> (optional (TokComment <<$>> trailingComment)))
-            -- TODO need to match any trailing space, EOL
+dotFile :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
+dotFile = concat <$> many dotFileLine
 
--- TODO handle quoted id
+dotFileLine :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
+dotFileLine = dotLineComment <|> dotLine
+
+dotLine :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
+dotLine = (\a b c d -> a <> b <> c <> d)
+    <$> optionalWhitespace
+    <*> tokensOrComments
+    <*> optionalEndComment
+    <*> spaceAndEndOfLine
+  where
+    optionalWhitespace = maybe [] pure <$> (optional (const TokEmpty <<$>> chompSomeSpace))
+    tokensOrComments   = many (dotToken <|> (TokComment <<$>> spanComment))
+    optionalEndComment = maybe [] pure <$> (optional (TokComment <<$>> trailingComment))
+    spaceAndEndOfLine  = pure <$> (const TokEmpty <<$>> (chompSpaceWith $ some space))
+  -- TODO FIXME need to change `some space` to optional hspace + endOfLine
+  --            maybe make a parser and call it endOfLineSpace
+
+dotLineComment :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
+dotLineComment = pure <$> (TokComment <<$>> lineComment)
+
+-- TODO is this called a lexeme rather than a Token?
 -- TODO order the alternatives appropriately
 dotToken :: ChompedParsing m => m (Chomp DotToken)
-dotToken = try (TokKeyword    <<$>> dotKeyword)
-           <|> TokIdentifier  <<$>> dotIdentifier
-           <|> TokOperator    <<$>> dotOperator
-           <|> TokPunctuation <<$>> dotPunctuation
-           <|> TokGrouping    <<$>> dotGrouping
+dotToken = try (TokKeyword     <<$>> dotKeyword)
+            <|> TokQuoted      <<$>> dotQuoted
+            <|> TokIdentifier  <<$>> dotIdentifier
+            <|> TokOperator    <<$>> dotOperator
+            <|> TokPunctuation <<$>> dotPunctuation
+            <|> TokGrouping    <<$>> dotGrouping
 
 dotKeyword :: ChompedParsing m => m (Chomp String)
 dotKeyword = chompKeyword "digraph" <|> chompKeyword "edge" <|> chompKeyword "graph"
           <|> chompKeyword "node" <|> try (chompKeyword "strict") <|> chompKeyword "subgraph"
+
+dotQuoted :: ChompedParsing m => m (Chomp String)
+dotQuoted = chomp quotedString
 
 dotPunctuation :: ChompedParsing m => m (Chomp Char)
 dotPunctuation = chomp (char ',') <|> chomp (char ';') <|> chomp (char ':')
@@ -136,45 +154,66 @@ dotGrouping = chomp $ oneOf "{}[]" <?> "{, }, [, ]"
 dotOperator :: ChompedParsing m => m (Chomp String)
 dotOperator = (chompSymbol "=") <|> (chompSymbol "--") <|> (chompSymbol "->")
 
+-- TODO FIXME this heuristic is too simple for numeric ids, due to possible
+--            unary negation and overlap of the '-' symbol w/edge ops
 dotIdentifier :: ChompedParsing m => m (Chomp String)
 dotIdentifier = chomp $ some (satisfy isDotIdChar) <?> "identifier"
 
-isDotIdChar :: Char -> Bool
-isDotIdChar c = isLetter c || isDigit c || c == '_'  -- skipping '\128' - '\255'
+isDotIdChar :: Char -> Bool   -- skipping '\128' - '\255'
+isDotIdChar c = isLetter c || isDigit c || c == '_' || c == '.' -- || c == '-'
 
 -- TODO for these comments that extend to the end-of-line, we really want the
 --   newline to appear in the left side (whitespace) of the Chomped, not the
 --   right (data) side, because the right side will later be discarded
 
 comment :: ChompedParsing m => m String -> m String -> m (Chomp String)
-comment beg end = pure <$> liftA2 (<>) beg (manyThru anyChar (try end) id)
+comment beg end = liftA2 (<>) (pure <$> beg) (chomp $ manyThru anyChar (try end) id)
 
-lineComment :: ChompedParsing m => m (Chomp String)
-lineComment = comment (string "#") endOfLine
--- lineComment = pure <$> liftA2 (<>) (string "#") (manyThru anyChar endOfLine id)
+comment' :: (LookAheadParsing m, ChompedParsing m) => m String -> m String -> m (Chomp String)
+comment' beg end = liftA2 (<>) (pure <$> beg) (chomp $ manyUntil anyChar (try end))
 
--- NB don't call chomp, we don't want to swallow the newline (until we fix chomp)
-trailingComment :: ChompedParsing m => m (Chomp String)
-trailingComment = comment (string "//") endOfLine
--- trailingComment = pure <$> liftA2 (<>) (string "//") (manyThru anyChar endOfLine id)
+lineComment :: (LookAheadParsing m, ChompedParsing m) => m (Chomp String)
+lineComment = comment' (string "#") endOfLine
 
--- TODO we probably need to actually chomp (except for newline!)
+trailingComment :: (LookAheadParsing m, ChompedParsing m) => m (Chomp String)
+trailingComment = comment' (string "//") endOfLine
+
 spanComment :: ChompedParsing m => m (Chomp String)
 spanComment = comment (string "/*") (string "*/")
--- spanComment = pure <$> liftA2 (<>) (string "/*") (manyThru anyChar (try (string "*/")) id)
+
+-- TODO FIXME we need to treat any use of '\' not followed by '"' or '\n' as
+--   not an escape prefix, but as a literal
+-- adapted from Text.Parser.Token stringLiteral in parsers
+quotedString :: CharParsing m => m String
+quotedString = literal where
+  literal = foldr (maybe id (:)) ""
+    <$> between (char '"') (char '"' <?> "end of string") (many stringChar)
+    <?> "string"
+
+  stringChar = Just <$> stringLetter <|> try falseEscape <|> stringEscape <?> "string character"
+  stringLetter = satisfy (\c -> (c /= '"') && (c /= '\\') && (c > '\026'))
+  falseEscape = Just <$> char '\\' <* notFollowedBy (escapeCode <|> space)
+
+  stringEscape = char '\\' *> esc where esc = Nothing <$ escapeGap
+                                          <|> Just <$> escapeCode
+
+  -- TODO is the escape "gap" different in Haskell than in C?
+  escapeGap = skipSome space *> (char '\\' <?> "end of string gap")
+  escapeCode = char '"'
+
 
 ------------------------------------------------------------------------------------------------
 -- Miscellaneous
 
 chompKeyword :: ChompedParsing m => String -> m (Chomp String)
-chompKeyword x = chomp (ignoreCase x <* notFollowedBy alphaNumericChar)
+chompKeyword x = chomp (ignoreCase x <* notFollowedBy alphaNumericChar) <?> show x
 
 ------------------------------------------------------------------------------------------------
 -- This will eliminate lines beginning with '#' from the input
 -- It also swallows all newlines, do we want that?
 --   --> we need to preserve them or replace with some sort of whitespace
 --        to delimit tokens!
-preprocessLineComments :: ChompedParsing m => m String
+preprocessLineComments :: (LookAheadParsing m, ChompedParsing m) => m String
 preprocessLineComments = concat <$> (some ("\n" <$ lineComment <|> normalLine))
 
 normalLine :: CharParsing m => m String
@@ -465,28 +504,10 @@ numericId = NumericId <$> integerOrDouble
 -- QUOTED-ID:
 --      '"' ...anything...  '"'     -- only escape char is \"
 quotedId :: TokenParsing m => m Identifier
-quotedId = QuotedId <$> stringLiteral''
+quotedId = QuotedId <$> stringLiteral
 
--- TODO FIXME we need to treat any use of '\' not followed by '"' or '\n' as
---   not an escape prefix, but as a literal
--- adapted from Text.Parser.Token stringLiteral in parsers
-stringLiteral'' :: (TokenParsing m, IsString s) => m s
-stringLiteral'' = fromString <$> token (highlight StringLiteral lit) where
-  lit = foldr (maybe id (:)) ""
-    <$> between (char '"') (char '"' <?> "end of string") (many stringChar)
-    <?> "string"
-
-  stringChar = Just <$> stringLetter <|> try falseEscape <|> stringEscape <?> "string character"
-  stringLetter = satisfy (\c -> (c /= '"') && (c /= '\\') && (c > '\026'))
-  falseEscape = Just <$> char '\\' <* notFollowedBy (escapeCode <|> space)
-
-  stringEscape = highlight EscapeCode $ char '\\' *> esc where
-    esc = Nothing <$ escapeGap
-      <|> Just <$> escapeCode
-
-  -- TODO is the escape "gap" different in Haskell than in C?
-  escapeGap = skipSome space *> (char '\\' <?> "end of string gap")
-  escapeCode = char '"'
+stringLiteral :: (TokenParsing m, IsString s) => m s
+stringLiteral = fromString <$> token (highlight StringLiteral quotedString)
 
 -- HTML-STRING:
 --    any legal XML string

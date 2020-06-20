@@ -4,7 +4,18 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ApplicativeDo #-}
 
-module DotLang.Util.Chomped where
+module DotLang.Util.Chomped
+  ( Chomped(..)
+  , Chomp
+  , ChompedParsing(..)
+  , hspace
+  , chompAllSpace
+  , chompSomeSpace
+  , chompSpace
+  , chompSpaceWith
+  , chompSymbol
+  , chompSquash
+  ) where
 
 import Control.Applicative ((<|>), some, Alternative)
 import Data.Bifunctor (Bifunctor)
@@ -13,16 +24,13 @@ import Data.Semigroup.Reducer (Reducer(..))
 import Text.Parser.Char (satisfy, space, string, CharParsing)
 import Text.Trifecta.Parser (Parser)
 
--- TODO how useful are Semigroup/Monoid? They concatenate tokens without
---      any interspersed whitespace which makes them unusable.
---       Reducer + foldReduce seems more like what we want.
---       is reducers overkill?
-
 newtype Chomped a b = Chomped (a, b)
   deriving (Eq, Show, Semigroup, Monoid, Functor, Bifunctor, Applicative)
 
+-- shorthand for most common use case
 type Chomp a = Chomped String a
 
+-- reduce a Chomped to a Semigroup
 instance (Semigroup m, Reducer a m, Reducer b m) => Reducer (Chomped a b) m where
   unit (Chomped (x, y)) = unit y <> unit x
 
@@ -31,9 +39,16 @@ instance (Semigroup a) => Reducer a a where      -- orphan
 
 class CharParsing m => ChompedParsing m where
   chomp :: m a -> m (Chomp a)
-  chomp p = do
+  chomp = chompWith chompableSpace
+
+  -- NB chompAll can chomp multiple consecutive newlines and any succeding whitespace
+  chompAll :: m a -> m (Chomp a)
+  chompAll = chompWith (some space)
+
+  chompWith :: (Monoid s) => m s -> m a -> m (Chomped s a)
+  chompWith sp p = do
     x <- p
-    s <- chompableSpace <|> pure ""
+    s <- sp <|> pure mempty
     return $ Chomped (s, x)
 
   chompableSpace :: m [Char]
@@ -45,23 +60,19 @@ hspace = satisfy isHspace
 isHspace :: Char -> Bool
 isHspace c = (c == ' ') || (c == '\t')
 
--- TODO refactor out the pattern commmon to all chomp**Space functions
---       (and chomp function itself)
+chompSpaceWith ::ChompedParsing m => m s -> m (Chomped s ())
+chompSpaceWith sp = do
+  s <- sp
+  return $ Chomped (s, ())
 
-chompSpace :: ChompedParsing m => m (Chomp String)
-chompSpace = do
-  s <- chompableSpace <|> pure ""
-  return $ Chomped (s, "")
+chompSpace :: ChompedParsing m => m (Chomp ())
+chompSpace = chompSpaceWith $ chompableSpace <|> pure ""
 
-chompSomeSpace :: ChompedParsing m => m (Chomp String)
-chompSomeSpace = do
-  s <- some space
-  return $ Chomped (s, "")
+chompSomeSpace :: ChompedParsing m => m (Chomp ())
+chompSomeSpace = chompSpaceWith $ some hspace
 
-chompAllSpace :: ChompedParsing m => m (Chomp String)
-chompAllSpace = do
-  s <- (some space) <|> pure ""
-  return $ Chomped (s, "")
+chompAllSpace :: ChompedParsing m => m (Chomp ())
+chompAllSpace = chompSpaceWith $ (some space) <|> pure ""
 
 chompSymbol :: ChompedParsing m => String -> m (Chomp String)
 chompSymbol x = chomp (string x)

@@ -1,15 +1,28 @@
-module DotLang.Util.Combinators where
+module DotLang.Util.Combinators
+  ( manyThru
+  , manyTillSub
+  , manyUntil
+  , optSepEndBy
+  , optSepEndBy1
+  ) where
 
 import Control.Applicative (Alternative, (<|>))
 import Text.Parser.Combinators (skipOptional)
+import Text.Parser.LookAhead (LookAheadParsing, lookAhead)
 
--- my variant of an existing combinator
-manyTillSub :: Alternative m => m a -> m end -> [a] -> m [a]
-manyTillSub p end sub = go where go = (sub <$ end) <|> ((:) <$> p <*> go)
+-- my variants of existing combinators
 
--- my variant of an existing combinator
+-- like manyTill but does not comsume the input from the `end` parser
+manyUntil :: (LookAheadParsing m, Alternative m) => m a -> m end -> m [a]
+manyUntil p end = go where go = ([] <$ lookAhead end) <|> ((:) <$> p <*> go)
+
+-- like manyTill but captures the result from the `end` parser
 manyThru:: Alternative m => m a -> m end -> (end -> [a]) -> m [a]
 manyThru p end f = go where go = (f <$> end) <|> ((:) <$> p <*> go)
+
+-- like manyTill but injects `sub` into the results in place of `end`
+manyTillSub :: Alternative m => m a -> m end -> [a] -> m [a]
+manyTillSub p end sub = go where go = (sub <$ end) <|> ((:) <$> p <*> go)
 
 ---------------------------
 -- modified combinators from Text.Parser.Combinators
