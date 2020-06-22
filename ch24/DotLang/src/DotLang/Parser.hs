@@ -1,37 +1,37 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE OverloadedStrings #-}           -- for Text, unneeded?
 {-# LANGUAGE ApplicativeDo #-}
 
 module DotLang.Parser
-  -- ( Graph(..)
-  -- , GraphType(..)
-  -- , Statement(..)
-  -- , AttributeType(..)
-  -- , Attribute(..)
-  -- , AttrList
-  -- , Assignment(..)
-  -- , Edge(..)
-  -- , EdgeRhs(..)
-  -- , Endpoint(..)
-  -- , Node(..)
-  -- , NodeId(..)
-  -- , Port(..)
-  -- , Subgraph(..)
-  -- , CompassPt(..)
-  -- , EdgeOp(..)
-  -- , Identifier(..)
-  -- , parseGraphFile
-  -- , parseGraphString
-  -- )
+  ( Graph(..)
+  , GraphType(..)
+  , Statement(..)
+  , AttributeType(..)
+  , Attribute(..)
+  , AttrList
+  , Assignment(..)
+  , Edge(..)
+  , EdgeRhs(..)
+  , Endpoint(..)
+  , Node(..)
+  , NodeId(..)
+  , Port(..)
+  , Subgraph(..)
+  , CompassPt(..)
+  , EdgeOp(..)
+  , Identifier(..)
+  , parseGraphFile
+  , parseGraphString
+  , dotFile  -- TODO TEMP
+  , dotHtml
+  )
   where
 
-import Control.Applicative ((<|>), liftA2)
+import Control.Applicative ((<|>), liftA2, liftA3)
 import Control.Monad.IO.Class (MonadIO)
 import Data.Char (isDigit, isLetter)
-import Data.Semigroup.Reducer (Reducer(..))
+import Data.Semigroup.Reducer (Reducer(..), foldReduce)
 import Data.String (IsString, fromString)
-import Data.Text (Text)
 
 import Text.Parser.Char
 import Text.Parser.Combinators
@@ -42,6 +42,7 @@ import Text.Parser.Token.Highlight
 import Text.Trifecta (parseFromFileEx, parseString)
 import Text.Trifecta.Result (Result(..))
 
+import qualified DotLang.Parser.Xml as XML
 import DotLang.Util.Char
 import DotLang.Util.Chomped
 import DotLang.Util.Combinators
@@ -58,14 +59,13 @@ import DotLang.Util.Combinators
 -- TODO WONTFIX parseFromFile uses parseFromFileEx which assumes UTF-8 encoding
 --              Other parts of Trifecta have baked-in reliance on UTF-8 as well.
 
--- TODO replace preprocessLineComments with our fully-fledged first pass
 parseGraphFile :: (MonadIO m) => FilePath -> m (Result Graph)
 parseGraphFile fp = do     -- outer do is for IO
-  fr <- parseFromFileEx preprocessLineComments fp
-  return $ do fr >>= parseString graph mempty   -- inner do is for Result
+  fr <- parseFromFileEx dotFile fp
+  return $ do foldReduce <$> fr >>= parseString graph mempty  -- inner do is for Result
 
 parseGraphString :: String -> Result Graph
-parseGraphString s = parse graph =<< parse preprocessLineComments s
+parseGraphString s = parse graph =<< foldReduce <$> parse dotFile s
   where parse p = parseString p mempty
 
 ------------------------------------------------------------------------------------------------
@@ -88,8 +88,9 @@ data DotToken =
   | TokQuoted String
   | TokOperator String
   | TokGrouping Char
-  | TokPunctuation Char
+  | TokSeparator Char
   | TokComment String
+  | TokHtml [String]
   deriving (Eq, Show)
 
 dtString :: DotToken -> String
@@ -100,7 +101,8 @@ dtString (TokQuoted x) = '"' : x ++ ['"']
 dtString (TokOperator x) = x
 dtString (TokComment x) = ' ' <$ x     -- replace comment text with whitespace
 dtString (TokGrouping x) = pure x
-dtString (TokPunctuation x) = pure x
+dtString (TokSeparator x) = pure x
+dtString (TokHtml xs) = concat xs
 
 instance Reducer DotToken String where
   unit = dtString
@@ -111,6 +113,7 @@ dotFile = concat <$> many dotFileLine
 dotFileLine :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
 dotFileLine = dotLineComment <|> dotLine
 
+-- TODO FIXME this needs updating to permit HTML identifiers
 dotLine :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
 dotLine = (\a b c d -> a <> b <> c <> d)
     <$> optionalWhitespace
@@ -120,7 +123,7 @@ dotLine = (\a b c d -> a <> b <> c <> d)
   where
     optionalWhitespace = maybe [] pure <$> (optional (const TokEmpty <<$>> chompSomeSpace))
     tokensOrComments   = many (dotToken <|> (TokComment <<$>> spanComment))
-    optionalEndComment = maybe [] pure <$> (optional (TokComment <<$>> trailingComment))
+    optionalEndComment = maybe [] pure <$> (optional (TokComment <<$>> endComment))
     spaceAndEndOfLine  = pure <$> (const TokEmpty <<$>> (chompSpaceWith $ some space))
   -- TODO FIXME need to change `some space` to optional hspace + endOfLine
   --            maybe make a parser and call it endOfLineSpace
@@ -128,14 +131,14 @@ dotLine = (\a b c d -> a <> b <> c <> d)
 dotLineComment :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
 dotLineComment = pure <$> (TokComment <<$>> lineComment)
 
--- TODO is this called a lexeme rather than a Token?
 -- TODO order the alternatives appropriately
 dotToken :: ChompedParsing m => m (Chomp DotToken)
 dotToken = try (TokKeyword     <<$>> dotKeyword)
             <|> TokQuoted      <<$>> dotQuoted
             <|> TokIdentifier  <<$>> dotIdentifier
+            <|> TokHtml        <<$>> dotHtml
             <|> TokOperator    <<$>> dotOperator
-            <|> TokPunctuation <<$>> dotPunctuation
+            <|> TokSeparator   <<$>> dotSeparator
             <|> TokGrouping    <<$>> dotGrouping
 
 dotKeyword :: ChompedParsing m => m (Chomp String)
@@ -143,16 +146,22 @@ dotKeyword = chompKeyword "digraph" <|> chompKeyword "edge" <|> chompKeyword "gr
           <|> chompKeyword "node" <|> try (chompKeyword "strict") <|> chompKeyword "subgraph"
 
 dotQuoted :: ChompedParsing m => m (Chomp String)
-dotQuoted = chomp quotedString
+dotQuoted = chomp quotedString      -- TODO does this lose the open/close quotes?
 
-dotPunctuation :: ChompedParsing m => m (Chomp Char)
-dotPunctuation = chomp (char ',') <|> chomp (char ';') <|> chomp (char ':')
+dotSeparator :: ChompedParsing m => m (Chomp Char)
+dotSeparator = chomp (char ',') <|> chomp (char ';') <|> chomp (char ':')
 
 dotGrouping :: ChompedParsing m => m (Chomp Char)
 dotGrouping = chomp $ oneOf "{}[]" <?> "{, }, [, ]"
 
 dotOperator :: ChompedParsing m => m (Chomp String)
 dotOperator = (chompSymbol "=") <|> (chompSymbol "--") <|> (chompSymbol "->")
+
+dotHtml :: ChompedParsing m => m (Chomp [String])
+dotHtml = (\a b c -> a <> b <> c) <$> mark '<' <*> body <*> mark '>'
+  where
+    mark c = (pure . pure) <<$>> chomp (char c)
+    body = chomp XML.lexElement
 
 -- TODO FIXME this heuristic is too simple for numeric ids, due to possible
 --            unary negation and overlap of the '-' symbol w/edge ops
@@ -175,8 +184,8 @@ comment' beg end = liftA2 (<>) (pure <$> beg) (chomp $ manyUntil anyChar (try en
 lineComment :: (LookAheadParsing m, ChompedParsing m) => m (Chomp String)
 lineComment = comment' (string "#") endOfLine
 
-trailingComment :: (LookAheadParsing m, ChompedParsing m) => m (Chomp String)
-trailingComment = comment' (string "//") endOfLine
+endComment :: (LookAheadParsing m, ChompedParsing m) => m (Chomp String)
+endComment = comment' (string "//") endOfLine
 
 spanComment :: ChompedParsing m => m (Chomp String)
 spanComment = comment (string "/*") (string "*/")
@@ -201,23 +210,11 @@ quotedString = literal where
   escapeGap = skipSome space *> (char '\\' <?> "end of string gap")
   escapeCode = char '"'
 
-
 ------------------------------------------------------------------------------------------------
 -- Miscellaneous
 
 chompKeyword :: ChompedParsing m => String -> m (Chomp String)
 chompKeyword x = chomp (ignoreCase x <* notFollowedBy alphaNumericChar) <?> show x
-
-------------------------------------------------------------------------------------------------
--- This will eliminate lines beginning with '#' from the input
--- It also swallows all newlines, do we want that?
---   --> we need to preserve them or replace with some sort of whitespace
---        to delimit tokens!
-preprocessLineComments :: (LookAheadParsing m, ChompedParsing m) => m String
-preprocessLineComments = concat <$> (some ("\n" <$ lineComment <|> normalLine))
-
-normalLine :: CharParsing m => m String
-normalLine = manyThru anyChar endOfLine id
 ------------------------------------------------------------------------------------------------
 
 {-  TODO Pass 1
@@ -272,6 +269,7 @@ data GraphType =
 
 graphType :: TokenParsing m => m GraphType
 graphType = (UndirectedGraph <$ keyword "graph") <|> (DirectedGraph <$ keyword "digraph")
+
 -- STATEMENT-LIST:
 --      [<statement> [';'] <statement-list>]
 
@@ -480,7 +478,7 @@ data Identifier =
     AlphaNumId String
   | NumericId (Either Integer Double)
   | QuotedId String
-  | HtmlId Text
+  | HtmlId XML.Element
   deriving (Eq, Show)
 
 identifier :: TokenParsing m => m Identifier
@@ -510,9 +508,9 @@ stringLiteral :: (TokenParsing m, IsString s) => m s
 stringLiteral = fromString <$> token (highlight StringLiteral quotedString)
 
 -- HTML-STRING:
---    any legal XML string
+--    '<' [any legal XML string] '>'
 htmlString :: TokenParsing m => m Identifier
-htmlString = HtmlId <$> textSymbol "<html>"  -- TODO placeholder
+htmlString = HtmlId <$> angles XML.parseElement
 
 -- ALPHANUMERIC:
 --      <alphanumeric-char>
@@ -536,12 +534,12 @@ nondigit = letter <|> (char '_') -- <|> oneOf ['\128'..'\255']
 
 -- We use digit from Text.Parser.Char
 
+----------------------------------------------------------------------------------------------------
 -- Utilities
 
 keyword :: TokenParsing m => String -> m String
-keyword name = token (highlight ReservedIdentifier
-                        (ignoreCase name <* notFollowedBy alphaNumericChar))
-                      <?> (show name)
+keyword name = token (highlight ReservedIdentifier kw) <?> (show name)
+  where kw = ignoreCase name <* notFollowedBy alphaNumericChar
 
 -------------------------------------------------------------------------------------------------
 -- NOTES:

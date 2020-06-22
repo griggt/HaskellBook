@@ -17,13 +17,15 @@ library
   hs-source-dirs:      src
   default-language:    Haskell2010
   build-depends:       base >= 4.7 && < 5
+                     , charset
                      , parsers
                      , reducers
-                     , text
                      , trifecta
 
   exposed-modules:
       DotLang.Parser
+      DotLang.Parser.Xml
+      DotLang.Unparser
       DotLang.Util.Char
       DotLang.Util.Chomped
       DotLang.Util.Combinators
