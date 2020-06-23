@@ -23,12 +23,14 @@ library
                      , trifecta
 
   exposed-modules:
+      Data.Semigroup.Reducer.Orphans
       DotLang.Parser
-      DotLang.Parser.Xml
       DotLang.Unparser
       DotLang.Util.Char
       DotLang.Util.Chomped
       DotLang.Util.Combinators
+      DotLang.Xml.Parser
+      DotLang.Xml.Unparser
 
 source-repository head
   type:     git

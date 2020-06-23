@@ -22,24 +22,10 @@ module DotLang.Parser
   , Identifier(..)
   , parseGraphFile
   , parseGraphString
-  , DotToken(..)  -- TODO TEMP
-  , dotFile  -- TODO TEMP
-  , dotLine  -- TODO TEMP
-  , dotToken -- TODO TEMP
-  , dotFileLine -- TODO TEMP
-  , dotKeyword  -- TEMP
-  , dotQuoted   -- TEMP
-  , dotIdentifier -- TEMP
-  , dotOperator   -- TEMP
-  , dotSeparator -- TEMP
-  , dotGrouping  -- TEMP
-  , spanComment  -- TEMP
-  , endComment   -- TEMP
-  , dotHtml
   )
   where
 
-import Control.Applicative ((<|>), liftA2, liftA3)
+import Control.Applicative ((<|>), liftA2)
 import Control.Monad.IO.Class (MonadIO)
 import Data.Char (isDigit, isLetter)
 import Data.Semigroup.Reducer (Reducer(..), foldReduce)
@@ -54,10 +40,11 @@ import Text.Parser.Token.Highlight
 import Text.Trifecta (parseFromFileEx, parseString)
 import Text.Trifecta.Result (Result(..))
 
-import qualified DotLang.Parser.Xml as XML
+import Data.Semigroup.Reducer.Orphans
 import DotLang.Util.Char
 import DotLang.Util.Chomped
 import DotLang.Util.Combinators
+import qualified DotLang.Xml.Parser as XML
 
 (<<$>>) :: (Functor f1, Functor f2) => (a -> b) -> f1 (f2 a) -> f1 (f2 b)
 (<<$>>) = fmap . fmap
@@ -114,65 +101,49 @@ dtString (TokOperator x) = x
 dtString (TokComment x) = ' ' <$ x     -- replace comment text with whitespace
 dtString (TokGrouping x) = pure x
 dtString (TokSeparator x) = pure x
-dtString (TokHtml xs) = concat xs
+dtString (TokHtml xs) = '<' : concat xs ++ ['>']
 
 instance Reducer DotToken String where
   unit = dtString
 
--- TODO FIXME this is failing on files that do not have a final newline
---        c.f. siblings.dot
 dotFile :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
 dotFile = concat <$> some dotFileLine
 
 dotFileLine :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
 dotFileLine = dotLineComment <|> dotLine
 
+dotLineComment :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
+dotLineComment = pure <$> (TokComment <<$>> lineComment)
+
 dotLine :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
 dotLine = try mixedContent <|> try someContent <|> try endCommentO <|> emptyLine
   where
-    emptyLine    = eol <|> trailing (some hspace)
-    endCommentO  = c3 <$> optionalSpace <*> endingComment             <*> maybeEol
-    someContent  = c3 <$> optionalSpace <*> content                   <*> maybeEol
-    mixedContent = c4 <$> optionalSpace <*> content <*> endingComment <*> maybeEol
+    emptyLine    = eol <|> spaceMaybeEol
+    endCommentO  = c3 <$> optionalSpace <*> endComment             <*> maybeEol
+    someContent  = c3 <$> optionalSpace <*> content                <*> maybeEol
+    mixedContent = c4 <$> optionalSpace <*> content <*> endComment <*> maybeEol
 
-    -- Components
-    optionalSpace = maybe [] pure <$> (optional (const TokEmpty <<$>> chompSomeSpace))
-    content       = some (dotToken <|> (TokComment <<$>> spanComment))
-    endingComment = pure <$> (TokComment <<$>> endComment)
-    eol           = pure <$> (const TokEmpty) <<$>> chompSpaceWith endOfLine'
-    maybeEol      = pure <$> (const TokEmpty) <<$>> chompSpaceWith (option [] endOfLine')
-    trailing s    = pure <$> ((const TokEmpty) <<$>> (chompSpaceWith $ liftA2 (<>) (s) (option [] endOfLine')))
+    -- Line constituents
+    content       = some (dotToken <|> tokComment dotSpanComment)
+    endComment    = pure <$> tokComment dotEndComment
+    optionalSpace = maybe [] pure <$> (optional (tokSpace chompableSpace))
 
-    -- TODO do we really need to be concerned with potential hspace before newline?
-    --       shouldn't it have been chomped by A, B, or C?  (except for emptyLine case)
+    eol           = pure <$> tokSpace endOfLine'
+    maybeEol      = pure <$> tokSpace (option [] endOfLine')
+    spaceMaybeEol = pure <$> tokSpace someSpaceMaybeEOL
 
-    --      dotToken
-    --        dotKeyword    Chomps?  yes   Tested?  yes
-    --        dotQuoted     Chomps?  yes   Tested?  yes
-    --        dotIdentifier Chomps?  yes   Tested?  yes
-    --        dotHtml       Chomps?  yes   Tested?  yes
-    --        dotOperator   Chomps?  yes   Tested?  yes
-    --        dotSeparator  Chomps?  yes   Tested?  yes
-    --        dotGrouping   Chomps?  yes   Tested?  yes
-    --      spanComment     Chomps?  yes   Tested?  yes
-    --      endingComment   Chomps?  yes   Tested?  captured as par of comment text
+    -- Helpers
+    tokComment p = TokComment <<$>> p
+    tokSpace s = (const TokEmpty) <<$>> chompSpaceWith s
+    someSpaceMaybeEOL = liftA2 (<>) chompableSpace (option [] endOfLine')
+
+    -- Combiners
+    c3 x y z   = x <> y <> z
+    c4 w x y z = w <> x <> y <> z
 
     -- TODO should the original definition of endOfLine include EOF as it does?
     endOfLine' :: CharParsing m => m [Char]
     endOfLine' = string "\r\n" <|> (pure <$> char '\n')
-
-    c3 x y z = x <> y <> z
-    c4 w x y z = w <> x <> y <> z
-
-    -- Maybe we need several productions.
-    ------ empty line (only whitespace)                                                     D
-    ------ required token or span comment (with optional leading/trailing space)  [A]  B   [D]
-    ------ required end comment (with optional leading trailing / space)          [A]    C [D]
-    ------ both tokens/end comment with optional leading trailing/space           [A]  B C [D]
-    ----------- is the assumption here that D is (some hspace) + at most one (optional) endOfLine?
-
-dotLineComment :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
-dotLineComment = pure <$> (TokComment <<$>> lineComment)
 
 -- TODO order the alternatives appropriately
 dotToken :: ChompedParsing m => m (Chomp DotToken)
@@ -189,10 +160,10 @@ dotKeyword = chompKeyword "digraph" <|> chompKeyword "edge" <|> chompKeyword "gr
           <|> chompKeyword "node" <|> try (chompKeyword "strict") <|> chompKeyword "subgraph"
 
 dotQuoted :: ChompedParsing m => m (Chomp String)
-dotQuoted = chomp quotedString   -- we replace the lost quotes in dtString
+dotQuoted = chomp quotedString   -- in dtString, we replace the quotes lost here
 
 dotSeparator :: ChompedParsing m => m (Chomp Char)
-dotSeparator = chomp (char ',') <|> chomp (char ';') <|> chomp (char ':')
+dotSeparator = chomp $ oneOf ",;:" <?> "\",\", \";\", \":\""
 
 dotGrouping :: ChompedParsing m => m (Chomp Char)
 dotGrouping = chomp $ oneOf "{}[]" <?> "{, }, [, ]"
@@ -201,12 +172,7 @@ dotOperator :: ChompedParsing m => m (Chomp String)
 dotOperator = (chompSymbol "=") <|> (chompSymbol "--") <|> (chompSymbol "->")
 
 dotHtml :: ChompedParsing m => m (Chomp [String])
-dotHtml = (\a b c -> a <> b <> c) <$> mark '<' <*> body <*> mark '>'
-  where
-    mark c = (pure . pure) <<$>> chomp (char c)
-    body = chomp XML.lexElement
-    -- TODO don't capture the < and >, just add back later in dtString
-    --      like we do for quoted strings
+dotHtml = chomp (char '<') *> chomp XML.lexElement <* chomp (char '>')
 
 -- TODO FIXME this heuristic is too simple for numeric ids, due to possible
 --            unary negation and overlap of the '-' symbol w/edge ops
@@ -229,11 +195,11 @@ comment' beg end = liftA2 (<>) (pure <$> beg) (chomp $ manyUntil anyChar (try en
 lineComment :: (LookAheadParsing m, ChompedParsing m) => m (Chomp String)
 lineComment = comment' (string "#") endOfLine
 
-endComment :: (LookAheadParsing m, ChompedParsing m) => m (Chomp String)
-endComment = comment' (string "//") endOfLine
+dotEndComment :: (LookAheadParsing m, ChompedParsing m) => m (Chomp String)
+dotEndComment = comment' (string "//") endOfLine
 
-spanComment :: ChompedParsing m => m (Chomp String)
-spanComment = comment (string "/*") (string "*/")
+dotSpanComment :: ChompedParsing m => m (Chomp String)
+dotSpanComment = comment (string "/*") (string "*/")
 
 -- TODO FIXME we need to treat any use of '\' not followed by '"' or '\n' as
 --   not an escape prefix, but as a literal
@@ -263,7 +229,7 @@ chompKeyword :: ChompedParsing m => String -> m (Chomp String)
 chompKeyword x = chomp (ignoreCase x <* notFollowedBy alphaNumericChar) <?> show x
 ------------------------------------------------------------------------------------------------
 
-{-  TODO Pass 1
+{-  Pass 1
         * preserve whitspace layout so error messages from next
           pass will have appropriate line/column indications!
 
@@ -276,8 +242,10 @@ chompKeyword x = chomp (ignoreCase x <* notFollowedBy alphaNumericChar) <?> show
 
         * handle quoted string concatenation (+)
           [add a production rule around string literals?]
+
+    Pass 2
+        * parse according to grammar
  -}
--- TODO Pass 2
 
 
 -----------------------------------------------------------------------------------------------
@@ -396,7 +364,7 @@ data Edge = Edge Endpoint [EdgeRhs] AttrList
   deriving (Eq, Show)
 
 edgeStatement :: TokenParsing m => m Edge
-edgeStatement = Edge <$> endpoint <*> edgeRhs <*> option [] attributeList  -- TODO [] or [[]]? does it matter?
+edgeStatement = Edge <$> endpoint <*> edgeRhs <*> option [] attributeList
 
 -- EDGE-RHS:
 --      <edgeop> <endpoint> [<edge-rhs>]
@@ -423,7 +391,7 @@ endpoint = (NodeEndpoint <$> nodeId) <|> (SubgraphEndpoint <$> subgraph) <?> "en
 data Node = Node NodeId AttrList deriving (Eq, Show)
 
 nodeStatement :: TokenParsing m => m Node
-nodeStatement = Node <$> nodeId <*> option [] attributeList  -- TODO [] or [[]]? does it matter?
+nodeStatement = Node <$> nodeId <*> option [] attributeList
 
 -- NODE-ID:
 --      <identifier> [<port>]
@@ -542,6 +510,7 @@ alphaNumericId = AlphaNumId <$> token ((:) <$> nondigit <*> many alphaNumericCha
 -- TODO I don't think we care about the numeric value, just the string rep?
 --      Or is this not so?  This is used on the RHS of attribute assignment.
 -- TODO FIXME integerOrDouble parser doesn't handle case of leading decimal point
+--             test case: lion_share.dot
 numericId :: TokenParsing m => m Identifier
 numericId = NumericId <$> integerOrDouble
 

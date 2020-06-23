@@ -22,7 +22,7 @@ import Data.Bifunctor (Bifunctor)
 import Data.Char (isSpace)
 import Data.Semigroup.Reducer (Reducer(..))
 import Text.Parser.Char (satisfy, space, string, CharParsing)
-import Text.Trifecta.Parser (Parser)
+import Text.Trifecta as Trifecta
 
 newtype Chomped a b = Chomped (a, b)
   deriving (Eq, Show, Semigroup, Monoid, Functor, Bifunctor, Applicative)
@@ -33,9 +33,6 @@ type Chomp a = Chomped String a
 -- reduce a Chomped to a Semigroup
 instance (Semigroup m, Reducer a m, Reducer b m) => Reducer (Chomped a b) m where
   unit (Chomped (x, y)) = unit y <> unit x
-
-instance (Semigroup a) => Reducer a a where      -- orphan
-  unit = id
 
 class CharParsing m => ChompedParsing m where
   chomp :: m a -> m (Chomp a)
@@ -81,4 +78,4 @@ chompSymbol x = chomp (string x)
 chompSquash :: ChompedParsing m => String -> m (Chomp String)
 chompSquash x = chomp ((' ' <$ x) <$ string x)
 
-instance ChompedParsing Parser
+instance ChompedParsing Trifecta.Parser

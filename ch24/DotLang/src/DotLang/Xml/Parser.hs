@@ -1,6 +1,5 @@
-module DotLang.Parser.Xml
-  (
-    Tag
+module DotLang.Xml.Parser
+  ( Tag
   , Element(..)
   , Content(..)
   , Reference(..)
@@ -14,8 +13,7 @@ module DotLang.Parser.Xml
   , Comment(..)
   , lexElement
   , parseElement
-  )
-  where
+  ) where
 
 import Control.Applicative ((<|>), many, some)
 import Data.Char (chr)
@@ -31,7 +29,7 @@ lexElement = many $ lexTag <|> lexNonTag
 
 lexTag :: CharParsing m => m String
 lexTag = (\a b c -> a : b ++ (pure c))
-  <$> (char '<') <*> (many $ noneOf "<>") <*> (char '>')  -- TODO is > actually permitted?
+  <$> (char '<') <*> (many $ noneOf "<>") <*> (char '>')
 
 lexNonTag :: CharParsing m => m String
 lexNonTag = some (noneOf "<>")
@@ -63,7 +61,7 @@ emptyElement = char '<' *> elt <* string "/>"
 -- TODO verify the name is the same on start and end tags
 contentElement :: TokenParsing m => m Element
 contentElement = elt
-  -- do   -- TODO FIXME very buggy, doesn't admit valid xml; use Errable instead of MonadFail? or `unexpected`?
+  -- do   -- FIXME very buggy, doesn't admit valid xml; use Errable instead of MonadFail? or `unexpected`?
   --   (Element stag _ _ (Just etag)) <- elt
   --   if (stag /= etag)
   --   then fail "unmatched start and end tags"
@@ -90,7 +88,6 @@ contentItem = try (ContentElement   <$> element)
           <|> try (ContentReference <$> reference)
           <|> try (ContentComment   <$> comment)
           <|>     (ContentCharData  <$> charData)
-          -- TODO also comments
 
 -- Reference	    ::=   	EntityRef | CharRef
 -- CharRef	      ::=   	'&#' [0-9]+ ';'

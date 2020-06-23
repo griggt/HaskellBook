@@ -1,7 +1,9 @@
 {-# LANGUAGE LambdaCase #-}
+
 module DotLang.Unparser
   ( unparseGraph
   , testUnparse
+  , testRoundtrip
   ) where
 
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -9,6 +11,7 @@ import Data.List (intercalate)
 import Text.Trifecta.Result
 
 import DotLang.Parser
+import qualified DotLang.Xml.Unparser as XML
 
 ------------------------------------------------------
 unparseGraph :: Graph -> String
@@ -20,6 +23,23 @@ testUnparse fp = do
   do case r of
       Success g -> liftIO $ putStrLn (graph g)
       Failure e -> liftIO $ putStrLn (show e)  -- TODO pretty print errors
+
+testRoundtrip :: (MonadIO m) => FilePath -> m ()
+testRoundtrip fp = do
+  r <- parseGraphFile fp
+  do case r of
+      Failure e -> liftIO $ putStrLn (show e)
+      Success g -> do 
+        case (parseGraphString (graph g)) of
+          Failure e' -> liftIO $ putStrLn (show e')
+          Success g' ->
+            if g == g'
+              then liftIO $ putStrLn "Success"
+              else do
+                liftIO $ putStrLn "Fail"
+                liftIO $ putStrLn (show g)
+                liftIO $ putStrLn (show g')
+
 ------------------------------------------------------
 
 graph :: Graph -> String
@@ -88,7 +108,7 @@ identifier :: Identifier -> String
 identifier (AlphaNumId x) = x
 identifier (NumericId x) = either show show x
 identifier (QuotedId x) = '"' : x ++ ['"']
-identifier (HtmlId x) = show x -- TODO FIXME
+identifier (HtmlId e) = '<' : (XML.unparseElement e) ++ ">"
 
 edgeOp :: EdgeOp -> String
 edgeOp = \case EdgeOpDirected -> " -> "
