@@ -63,7 +63,7 @@ emptyElement = char '<' *> elt <* string "/>"
 -- TODO verify the name is the same on start and end tags
 contentElement :: TokenParsing m => m Element
 contentElement = elt
-  -- do   -- TODO FIXME very buggy, doesn't admit valid xml
+  -- do   -- TODO FIXME very buggy, doesn't admit valid xml; use Errable instead of MonadFail? or `unexpected`?
   --   (Element stag _ _ (Just etag)) <- elt
   --   if (stag /= etag)
   --   then fail "unmatched start and end tags"

@@ -22,7 +22,19 @@ module DotLang.Parser
   , Identifier(..)
   , parseGraphFile
   , parseGraphString
+  , DotToken(..)  -- TODO TEMP
   , dotFile  -- TODO TEMP
+  , dotLine  -- TODO TEMP
+  , dotToken -- TODO TEMP
+  , dotFileLine -- TODO TEMP
+  , dotKeyword  -- TEMP
+  , dotQuoted   -- TEMP
+  , dotIdentifier -- TEMP
+  , dotOperator   -- TEMP
+  , dotSeparator -- TEMP
+  , dotGrouping  -- TEMP
+  , spanComment  -- TEMP
+  , endComment   -- TEMP
   , dotHtml
   )
   where
@@ -71,7 +83,7 @@ parseGraphString s = parse graph =<< foldReduce <$> parse dotFile s
 ------------------------------------------------------------------------------------------------
 -- EXPERIMENTAL lexing / pre-processing for comment handling
 
--- TODO everywhere in the first pass, keep the layout of the output the same as
+-- everywhere in the first pass, keep the layout of the output the same as
 --      the input. this means that for all comments and whitespace that gets
 --      chomped, the equivalent whitespace (' ' or '\n' needs to be re-injected)
 --       This is to keep row/col numbers for error messages in pass 2 accurate.
@@ -107,26 +119,57 @@ dtString (TokHtml xs) = concat xs
 instance Reducer DotToken String where
   unit = dtString
 
+-- TODO FIXME this is failing on files that do not have a final newline
+--        c.f. siblings.dot
 dotFile :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
-dotFile = concat <$> many dotFileLine
+dotFile = concat <$> some dotFileLine
 
 dotFileLine :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
 dotFileLine = dotLineComment <|> dotLine
 
--- TODO FIXME this needs updating to permit HTML identifiers
 dotLine :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
-dotLine = (\a b c d -> a <> b <> c <> d)
-    <$> optionalWhitespace
-    <*> tokensOrComments
-    <*> optionalEndComment
-    <*> spaceAndEndOfLine
+dotLine = try mixedContent <|> try someContent <|> try endCommentO <|> emptyLine
   where
-    optionalWhitespace = maybe [] pure <$> (optional (const TokEmpty <<$>> chompSomeSpace))
-    tokensOrComments   = many (dotToken <|> (TokComment <<$>> spanComment))
-    optionalEndComment = maybe [] pure <$> (optional (TokComment <<$>> endComment))
-    spaceAndEndOfLine  = pure <$> (const TokEmpty <<$>> (chompSpaceWith $ some space))
-  -- TODO FIXME need to change `some space` to optional hspace + endOfLine
-  --            maybe make a parser and call it endOfLineSpace
+    emptyLine    = eol <|> trailing (some hspace)
+    endCommentO  = c3 <$> optionalSpace <*> endingComment             <*> maybeEol
+    someContent  = c3 <$> optionalSpace <*> content                   <*> maybeEol
+    mixedContent = c4 <$> optionalSpace <*> content <*> endingComment <*> maybeEol
+
+    -- Components
+    optionalSpace = maybe [] pure <$> (optional (const TokEmpty <<$>> chompSomeSpace))
+    content       = some (dotToken <|> (TokComment <<$>> spanComment))
+    endingComment = pure <$> (TokComment <<$>> endComment)
+    eol           = pure <$> (const TokEmpty) <<$>> chompSpaceWith endOfLine'
+    maybeEol      = pure <$> (const TokEmpty) <<$>> chompSpaceWith (option [] endOfLine')
+    trailing s    = pure <$> ((const TokEmpty) <<$>> (chompSpaceWith $ liftA2 (<>) (s) (option [] endOfLine')))
+
+    -- TODO do we really need to be concerned with potential hspace before newline?
+    --       shouldn't it have been chomped by A, B, or C?  (except for emptyLine case)
+
+    --      dotToken
+    --        dotKeyword    Chomps?  yes   Tested?  yes
+    --        dotQuoted     Chomps?  yes   Tested?  yes
+    --        dotIdentifier Chomps?  yes   Tested?  yes
+    --        dotHtml       Chomps?  yes   Tested?  yes
+    --        dotOperator   Chomps?  yes   Tested?  yes
+    --        dotSeparator  Chomps?  yes   Tested?  yes
+    --        dotGrouping   Chomps?  yes   Tested?  yes
+    --      spanComment     Chomps?  yes   Tested?  yes
+    --      endingComment   Chomps?  yes   Tested?  captured as par of comment text
+
+    -- TODO should the original definition of endOfLine include EOF as it does?
+    endOfLine' :: CharParsing m => m [Char]
+    endOfLine' = string "\r\n" <|> (pure <$> char '\n')
+
+    c3 x y z = x <> y <> z
+    c4 w x y z = w <> x <> y <> z
+
+    -- Maybe we need several productions.
+    ------ empty line (only whitespace)                                                     D
+    ------ required token or span comment (with optional leading/trailing space)  [A]  B   [D]
+    ------ required end comment (with optional leading trailing / space)          [A]    C [D]
+    ------ both tokens/end comment with optional leading trailing/space           [A]  B C [D]
+    ----------- is the assumption here that D is (some hspace) + at most one (optional) endOfLine?
 
 dotLineComment :: (LookAheadParsing m, ChompedParsing m) => m [Chomp DotToken]
 dotLineComment = pure <$> (TokComment <<$>> lineComment)
@@ -146,7 +189,7 @@ dotKeyword = chompKeyword "digraph" <|> chompKeyword "edge" <|> chompKeyword "gr
           <|> chompKeyword "node" <|> try (chompKeyword "strict") <|> chompKeyword "subgraph"
 
 dotQuoted :: ChompedParsing m => m (Chomp String)
-dotQuoted = chomp quotedString      -- TODO does this lose the open/close quotes?
+dotQuoted = chomp quotedString   -- we replace the lost quotes in dtString
 
 dotSeparator :: ChompedParsing m => m (Chomp Char)
 dotSeparator = chomp (char ',') <|> chomp (char ';') <|> chomp (char ':')
@@ -162,6 +205,8 @@ dotHtml = (\a b c -> a <> b <> c) <$> mark '<' <*> body <*> mark '>'
   where
     mark c = (pure . pure) <<$>> chomp (char c)
     body = chomp XML.lexElement
+    -- TODO don't capture the < and >, just add back later in dtString
+    --      like we do for quoted strings
 
 -- TODO FIXME this heuristic is too simple for numeric ids, due to possible
 --            unary negation and overlap of the '-' symbol w/edge ops
@@ -171,7 +216,7 @@ dotIdentifier = chomp $ some (satisfy isDotIdChar) <?> "identifier"
 isDotIdChar :: Char -> Bool   -- skipping '\128' - '\255'
 isDotIdChar c = isLetter c || isDigit c || c == '_' || c == '.' -- || c == '-'
 
--- TODO for these comments that extend to the end-of-line, we really want the
+-- for these comments that extend to the end-of-line, we really want the
 --   newline to appear in the left side (whitespace) of the Chomped, not the
 --   right (data) side, because the right side will later be discarded
 
@@ -203,8 +248,9 @@ quotedString = literal where
   stringLetter = satisfy (\c -> (c /= '"') && (c /= '\\') && (c > '\026'))
   falseEscape = Just <$> char '\\' <* notFollowedBy (escapeCode <|> space)
 
-  stringEscape = char '\\' *> esc where esc = Nothing <$ escapeGap
-                                          <|> Just <$> escapeCode
+  stringEscape = char '\\' *> esc
+    where esc = Nothing <$ escapeGap
+            <|> Just <$> escapeCode
 
   -- TODO is the escape "gap" different in Haskell than in C?
   escapeGap = skipSome space *> (char '\\' <?> "end of string gap")
